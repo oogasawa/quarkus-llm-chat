@@ -1,19 +1,54 @@
-// quarkus-coder-agent REST + EventSource SSE client
+// quarkus-llm-chat REST + EventSource SSE client
 
 (function () {
     'use strict';
 
-    // --- DEBUG: dump all localStorage keys on startup ---
-    (function () {
-        var keys = [];
-        for (var i = 0; i < localStorage.length; i++) {
-            var k = localStorage.key(i);
-            var v = localStorage.getItem(k);
-            keys.push(k + '=' + (v && v.length > 60 ? v.substring(0, 60) + '...' : v));
+    // --- Login ---
+    var currentUser = localStorage.getItem('llm-chat-user') || '';
+
+    function showLogin() {
+        document.getElementById('login-screen').style.display = 'flex';
+        document.getElementById('app').style.display = 'none';
+        var input = document.getElementById('login-user');
+        input.value = currentUser;
+        input.focus();
+    }
+
+    function startApp(username) {
+        currentUser = username;
+        localStorage.setItem('llm-chat-user', username);
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app').style.display = '';
+        document.getElementById('user-label').textContent = username;
+        initApp();
+    }
+
+    document.getElementById('login-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var username = document.getElementById('login-user').value.trim();
+        if (username) {
+            startApp(username);
         }
-        console.log('[coder-agent] localStorage dump (' + localStorage.length + ' keys): ' + keys.join(' | '));
-        console.log('[coder-agent] page URL: ' + window.location.href);
-    })();
+    });
+
+    if (currentUser) {
+        startApp(currentUser);
+    } else {
+        showLogin();
+    }
+
+    var appInitialized = false;
+    function initApp() {
+        if (appInitialized) return;
+        appInitialized = true;
+        doInitApp();
+    }
+
+    function apiUrl(path) {
+        return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'user=' + encodeURIComponent(currentUser);
+    }
+
+    function doInitApp() {
 
     const chatArea = document.getElementById('chat-area');
     const promptInput = document.getElementById('prompt-input');
@@ -66,12 +101,12 @@
     let pendingPrompt = false;  // true when an ask_user prompt is awaiting user response
 
     // --- Chat history (persisted to localStorage) ---
-    var HISTORY_KEY = 'coder-agent-history' + SESSION_SUFFIX;
+    var HISTORY_KEY = 'coder-agent-history-' + currentUser + SESSION_SUFFIX;
     var MAX_HISTORY = 500;
     var chatHistory = []; // [{role: 'user'|'assistant'|'info'|'error', text: string}]
 
     // --- Prompt Queue (position-based, persisted to localStorage) ---
-    var QUEUE_KEY = 'coder-agent-queue' + SESSION_SUFFIX;
+    var QUEUE_KEY = 'coder-agent-queue-' + currentUser + SESSION_SUFFIX;
     var queue = [];   // [{text: string, auto: boolean}]
     var queuePos = 0; // index of next item to send
     var MAX_QUEUE_SIZE = 100;
@@ -101,7 +136,7 @@
     // --- Model loading ---
 
     function loadModels() {
-        fetch('api/models')
+        fetch(apiUrl('api/models'))
             .then(function (resp) { return resp.json(); })
             .then(function (models) {
                 modelSelect.innerHTML = '';
@@ -161,14 +196,22 @@
     // --- EventSource SSE connection ---
 
     var eventSource = null;
+    var reconnectDebounce = null;
+    var reconnectAttempts = 0;
 
     function connectSSE() {
         if (eventSource) {
             eventSource.close();
         }
-        eventSource = new EventSource('api/chat/stream');
+        eventSource = new EventSource(apiUrl('api/chat/stream'));
 
         eventSource.onopen = function () {
+            // Clear any pending reconnecting indicator
+            if (reconnectDebounce) {
+                clearTimeout(reconnectDebounce);
+                reconnectDebounce = null;
+            }
+            reconnectAttempts = 0;
             connectionStatus.textContent = 'ready';
             connectionStatus.className = 'connected';
         };
@@ -182,8 +225,23 @@
         };
 
         eventSource.onerror = function () {
-            connectionStatus.textContent = 'reconnecting';
-            connectionStatus.className = 'disconnected';
+            // Debounce: only show "reconnecting" if disconnected for >2 seconds
+            if (!reconnectDebounce) {
+                reconnectDebounce = setTimeout(function () {
+                    reconnectDebounce = null;
+                    if (!eventSource || eventSource.readyState !== 1) {
+                        connectionStatus.textContent = 'reconnecting';
+                        connectionStatus.className = 'disconnected';
+                    }
+                }, 2000);
+            }
+            // If EventSource gave up (CLOSED), manually reconnect with backoff
+            if (eventSource.readyState === 2) {
+                reconnectAttempts++;
+                var delay = Math.min(reconnectAttempts * 5000, 30000);
+                console.log('[SSE] Connection closed, reconnecting in ' + (delay/1000) + 's');
+                setTimeout(connectSSE, delay);
+            }
         };
     }
 
@@ -977,7 +1035,7 @@
 
         // Submit prompt via POST; events arrive through EventSource
         try {
-            var response = await fetch('api/chat', {
+            var response = await fetch(apiUrl('api/chat'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: text, model: modelSelect.value })
@@ -1019,7 +1077,7 @@
 
     async function cancelRequest() {
         try {
-            await fetch('api/cancel', { method: 'POST' });
+            await fetch(apiUrl('api/cancel'), { method: 'POST' });
         } catch (e) {
             // ignore
         }
@@ -1249,7 +1307,24 @@
         queuePos = 0;
         pendingPrompt = false;
         localStorage.removeItem(HISTORY_KEY);
+        // Clear server-side conversation history
+        fetch(apiUrl('api/clear'), { method: 'POST' }).catch(function () {});
         promptInput.focus();
+    });
+
+    document.getElementById('logout-btn').addEventListener('click', function () {
+        // Close SSE connection
+        if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+        }
+        // Clear server-side history
+        fetch(apiUrl('api/clear'), { method: 'POST' }).catch(function () {});
+        // Clear local state
+        localStorage.removeItem('llm-chat-user');
+        currentUser = '';
+        // Reload page to show login screen
+        window.location.reload();
     });
 
     modelSelect.addEventListener('change', async function () {
@@ -1292,7 +1367,7 @@
     // --- Load app config (title etc.) ---
 
     function loadConfig() {
-        fetch('api/config')
+        fetch(apiUrl('api/config'))
             .then(function (resp) { return resp.json(); })
             .then(function (cfg) {
                 if (cfg.title) {
@@ -1361,7 +1436,7 @@
     logPanel.addEventListener('toggle', function () {
         if (logPanel.open && !logLoaded) {
             logLoaded = true;
-            fetch('api/logs')
+            fetch(apiUrl('api/logs'))
                 .then(function (resp) { return resp.json(); })
                 .then(function (logs) { appendLogBatch(logs); })
                 .catch(function () { /* ignore */ });
@@ -1375,4 +1450,6 @@
     restoreQueue();
     connectSSE();
     promptInput.focus();
+
+    } // end doInitApp
 })();

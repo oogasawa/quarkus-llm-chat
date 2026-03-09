@@ -33,6 +33,7 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
@@ -102,7 +103,12 @@ public class ChatResource {
      * User is identified from the BasicAuth header on the SSE request.
      */
     private void handleSseConnect(RoutingContext rc) {
-        String userId = extractUserId(rc.request());
+        // Try query parameter first (EventSource cannot send custom headers),
+        // then fall back to BasicAuth header.
+        var userParams = rc.queryParam("user");
+        String queryUser = (userParams != null && !userParams.isEmpty()) ? userParams.get(0) : null;
+        final String userId = (queryUser != null && !queryUser.isBlank())
+                ? queryUser : extractUserId(rc.request());
         if (userId == null) {
             rc.response().setStatusCode(401).end("Unauthorized");
             return;
@@ -125,6 +131,9 @@ public class ChatResource {
         response.putHeader("X-Accel-Buffering", "no");
 
         sseConnections.put(userId, response);
+
+        // Tell browser to wait 10 seconds before reconnecting
+        response.write("retry: 10000\n\n");
 
         // Send initial status
         writeSse(response, ChatEvent.status(null, null, chatService.isBusy(userId)));
@@ -177,7 +186,8 @@ public class ChatResource {
         if (resp != null && !resp.ended()) {
             vertx.runOnContext(v -> writeSse(resp, event));
         } else {
-            logger.fine("SSE event DROPPED (no connection for " + userId + "): type=" + event.type());
+            logger.warning("SSE event DROPPED (no connection for " + userId
+                    + ", resp=" + (resp == null ? "null" : "ended") + "): type=" + event.type());
         }
     }
 
@@ -200,8 +210,8 @@ public class ChatResource {
     @Path("/chat")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    public ChatEvent chat(PromptRequest request, @Context HttpHeaders headers) {
-        String userId = extractUserId(headers);
+    public ChatEvent chat(PromptRequest request, @QueryParam("user") String queryUser, @Context HttpHeaders headers) {
+        String userId = resolveUserId(queryUser, headers);
         if (userId == null) {
             return ChatEvent.error("Unauthorized");
         }
@@ -235,8 +245,8 @@ public class ChatResource {
     @POST
     @Path("/cancel")
     @Produces(MediaType.APPLICATION_JSON)
-    public ChatEvent cancel(@Context HttpHeaders headers) {
-        String userId = extractUserId(headers);
+    public ChatEvent cancel(@QueryParam("user") String queryUser, @Context HttpHeaders headers) {
+        String userId = resolveUserId(queryUser, headers);
         if (userId == null) {
             return ChatEvent.error("Unauthorized");
         }
@@ -250,8 +260,8 @@ public class ChatResource {
     @POST
     @Path("/clear")
     @Produces(MediaType.APPLICATION_JSON)
-    public ChatEvent clear(@Context HttpHeaders headers) {
-        String userId = extractUserId(headers);
+    public ChatEvent clear(@QueryParam("user") String queryUser, @Context HttpHeaders headers) {
+        String userId = resolveUserId(queryUser, headers);
         if (userId == null) {
             return ChatEvent.error("Unauthorized");
         }
@@ -265,8 +275,8 @@ public class ChatResource {
     @GET
     @Path("/status")
     @Produces(MediaType.APPLICATION_JSON)
-    public ChatEvent status(@Context HttpHeaders headers) {
-        String userId = extractUserId(headers);
+    public ChatEvent status(@QueryParam("user") String queryUser, @Context HttpHeaders headers) {
+        String userId = resolveUserId(queryUser, headers);
         boolean busy = userId != null && chatService.isBusy(userId);
         return ChatEvent.status(null, null, busy);
     }
@@ -303,7 +313,17 @@ public class ChatResource {
         return new AppConfig(appTitle);
     }
 
-    // --- BasicAuth user extraction ---
+    // --- User extraction ---
+
+    /**
+     * Extracts user ID: query parameter takes precedence, then BasicAuth header.
+     */
+    static String resolveUserId(String queryUser, HttpHeaders headers) {
+        if (queryUser != null && !queryUser.isBlank()) {
+            return queryUser;
+        }
+        return extractUserId(headers);
+    }
 
     /**
      * Extracts user ID from BasicAuth header (JAX-RS HttpHeaders).

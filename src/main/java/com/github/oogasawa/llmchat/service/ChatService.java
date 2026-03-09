@@ -19,6 +19,7 @@ package com.github.oogasawa.llmchat.service;
 
 import com.github.oogasawa.llmchat.rest.ChatEvent;
 import com.github.oogasawa.llmchat.vllm.ChatMessage;
+import com.github.oogasawa.llmchat.vllm.ContextLengthExceededException;
 import com.github.oogasawa.llmchat.vllm.VllmClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -108,6 +109,9 @@ public class ChatService {
      * @param model  the model name to use
      * @param sender callback for sending ChatEvent responses
      */
+    /** Maximum number of retries when context length is exceeded. */
+    private static final int MAX_CONTEXT_RETRIES = 3;
+
     public void sendPrompt(String userId, String prompt, String model, Consumer<ChatEvent> sender) {
         if (isBusy(userId)) {
             sender.accept(ChatEvent.error("Already processing a prompt. Please wait or cancel."));
@@ -134,27 +138,40 @@ public class ChatService {
                     + " history=" + history.size() + " prompt="
                     + prompt.substring(0, Math.min(prompt.length(), 80)));
 
-            String response = client.sendPrompt(model, history, new VllmClient.StreamCallback() {
-                @Override
-                public void onDelta(String content) {
-                    sender.accept(ChatEvent.delta(content));
-                }
+            // Retry loop: trim history aggressively on context length overflow
+            String response = null;
+            for (int attempt = 0; attempt < MAX_CONTEXT_RETRIES; attempt++) {
+                try {
+                    response = client.sendPrompt(model, history, new VllmClient.StreamCallback() {
+                        @Override
+                        public void onDelta(String content) {
+                            sender.accept(ChatEvent.delta(content));
+                        }
 
-                @Override
-                public void onComplete(long durationMs) {
-                    sender.accept(ChatEvent.result(null, 0.0, durationMs, model, false));
-                }
+                        @Override
+                        public void onComplete(long durationMs) {
+                            sender.accept(ChatEvent.result(null, 0.0, durationMs, model, false));
+                        }
 
-                @Override
-                public void onError(String message) {
-                    if ("context_length_exceeded".equals(message)) {
-                        // Trim aggressively and retry is handled below
-                        sender.accept(ChatEvent.delta("[Context too long, trimming history...]\n"));
-                    } else {
-                        sender.accept(ChatEvent.error(message));
+                        @Override
+                        public void onError(String message) {
+                            sender.accept(ChatEvent.error(message));
+                        }
+                    });
+                    break; // success or non-context error
+                } catch (ContextLengthExceededException e) {
+                    int removed = trimHistoryAggressive(history);
+                    if (removed == 0) {
+                        sender.accept(ChatEvent.error("Context too long even after trimming all history"));
+                        break;
                     }
+                    sender.accept(ChatEvent.delta("[Context too long, trimming history... (attempt "
+                            + (attempt + 1) + ")]\n"));
+                    logger.info("Context length exceeded for user=" + userId
+                            + ", trimmed " + removed + " messages, " + history.size()
+                            + " remaining (attempt " + (attempt + 1) + ")");
                 }
-            });
+            }
 
             if (response != null) {
                 // Success: add assistant response to history
@@ -203,14 +220,18 @@ public class ChatService {
      * Finds the LLM client that serves the given model.
      */
     VllmClient findClientForModel(String model) {
+        // First try cached model list
         for (VllmClient client : llmClients) {
             if (client.servesModel(model)) {
                 return client;
             }
         }
-        // Fallback: first client
-        if (!llmClients.isEmpty()) {
-            return llmClients.get(0);
+        // Cache miss: refresh model lists and retry
+        for (VllmClient client : llmClients) {
+            client.fetchModels();
+            if (client.servesModel(model)) {
+                return client;
+            }
         }
         return null;
     }
@@ -226,5 +247,32 @@ public class ChatService {
         while (!history.isEmpty() && !(history.get(0) instanceof ChatMessage.User)) {
             history.remove(0);
         }
+    }
+
+    /**
+     * Aggressively trims history by removing half the messages.
+     * Used when context length is exceeded despite normal trimming.
+     * Ensures history starts with a user message after trimming.
+     *
+     * @return the number of messages removed
+     */
+    int trimHistoryAggressive(List<ChatMessage> history) {
+        if (history.size() <= 2) {
+            return 0;
+        }
+        int toRemove = history.size() / 2;
+        int removed = 0;
+        for (int i = 0; i < toRemove; i++) {
+            history.remove(0);
+            removed++;
+        }
+        // Ensure history starts with a user message
+        while (!history.isEmpty() && !(history.get(0) instanceof ChatMessage.User)) {
+            history.remove(0);
+            removed++;
+        }
+        logger.info("Aggressive trim: removed " + removed + " messages, "
+                + history.size() + " remaining");
+        return removed;
     }
 }

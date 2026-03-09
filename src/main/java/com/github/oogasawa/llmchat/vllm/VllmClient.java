@@ -40,9 +40,6 @@ public class VllmClient {
 
     private static final Logger logger = Logger.getLogger(VllmClient.class.getName());
 
-    /** Maximum number of retries when context length is exceeded. */
-    private static final int MAX_CONTEXT_RETRIES = 3;
-
     private final String baseUrl;
     private final HttpClient httpClient;
     private volatile List<String> cachedModels = List.of();
@@ -207,40 +204,48 @@ public class VllmClient {
             String requestBody = buildRequestBody(model, history);
             HttpResponse<Stream<String>> response = null;
 
-            for (int attempt = 0; attempt < MAX_CONTEXT_RETRIES; attempt++) {
-                response = sendWithRetry(requestBody);
+            response = sendWithRetry(requestBody);
 
-                if (response.statusCode() == 400) {
-                    StringBuilder errorBody = new StringBuilder();
-                    response.body().forEach(errorBody::append);
-                    String errorStr = errorBody.toString();
-                    if (isContextLengthError(errorStr)) {
-                        callback.onError("context_length_exceeded");
-                        return null;
-                    }
-                    callback.onError("vLLM returned HTTP 400: " + errorStr);
-                    return null;
+            if (response.statusCode() == 400) {
+                StringBuilder errorBody = new StringBuilder();
+                response.body().forEach(errorBody::append);
+                String errorStr = errorBody.toString();
+                if (isContextLengthError(errorStr)) {
+                    throw new ContextLengthExceededException(errorStr);
                 }
-                if (response.statusCode() != 200) {
-                    StringBuilder errorBody = new StringBuilder();
-                    response.body().forEach(errorBody::append);
-                    String error = "vLLM returned HTTP " + response.statusCode() + ": " + errorBody;
-                    logger.warning(error);
-                    callback.onError(error);
-                    return null;
-                }
-                break;
+                callback.onError("vLLM returned HTTP 400: " + errorStr);
+                return null;
+            }
+            if (response.statusCode() != 200) {
+                StringBuilder errorBody = new StringBuilder();
+                response.body().forEach(errorBody::append);
+                String error = "vLLM returned HTTP " + response.statusCode() + ": " + errorBody;
+                logger.warning(error);
+                callback.onError(error);
+                return null;
             }
 
             StringBuilder fullResponse = new StringBuilder();
+            boolean interrupted = false;
 
-            response.body().forEach(line -> {
+            var iterator = response.body().iterator();
+            while (iterator.hasNext()) {
+                if (Thread.currentThread().isInterrupted()) {
+                    interrupted = true;
+                    break;
+                }
+                String line = iterator.next();
                 String content = parseSseLine(line);
                 if (content != null) {
                     fullResponse.append(content);
                     callback.onDelta(content);
                 }
-            });
+            }
+
+            if (interrupted) {
+                callback.onError("Request cancelled");
+                return null;
+            }
 
             long durationMs = System.currentTimeMillis() - startTime;
             callback.onComplete(durationMs);
@@ -249,8 +254,24 @@ public class VllmClient {
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            callback.onError("Request interrupted");
+            callback.onError("Request cancelled");
             return null;
+        } catch (java.io.UncheckedIOException e) {
+            // Stream read interrupted (cancel)
+            if (e.getCause() != null && e.getCause().getCause() instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+                callback.onError("Request cancelled");
+                return null;
+            }
+            logger.log(Level.WARNING, "vLLM request failed", e);
+            String msg = e.getMessage();
+            if (isContextLengthError(msg)) {
+                throw new ContextLengthExceededException(msg);
+            }
+            callback.onError("vLLM error (" + baseUrl + "): " + msg);
+            return null;
+        } catch (ContextLengthExceededException e) {
+            throw e; // propagate to ChatService retry loop
         } catch (Exception e) {
             logger.log(Level.WARNING, "vLLM request failed", e);
             String detail = e.getMessage();
@@ -259,6 +280,10 @@ public class VllmClient {
                 if (e.getCause() != null) {
                     detail += ": " + e.getCause().getMessage();
                 }
+            }
+            // Check if the error message contains context length info
+            if (isContextLengthError(detail)) {
+                throw new ContextLengthExceededException(detail);
             }
             callback.onError("vLLM error (" + baseUrl + "): " + detail);
             return null;
