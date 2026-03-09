@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>quarkus-coder-agent</title>
+    <link rel="stylesheet" href="styles.css?v=27">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>quarkus-coder-agent</h1>
+            <div id="status-bar">
+                <label id="theme-label">Theme:
+                    <select id="theme-select">
+                        <option value="dark-catppuccin">Dark Catppuccin</option>
+                        <option value="dark-nord">Dark Nord</option>
+                        <option value="dark-blue">Dark Blue</option>
+                        <option value="dark-green">Dark Green</option>
+                        <option value="dark-red">Dark Red</option>
+                        <option value="light-clean">Light Clean</option>
+                        <option value="light-warm">Light Warm</option>
+                        <option value="light-blue">Light Blue</option>
+                        <option value="light-green">Light Green</option>
+                        <option value="light-red">Light Red</option>
+                    </select>
+                </label>
+                <label id="model-label">Model:
+                    <select id="model-select">
+                        <!-- Populated dynamically from /api/models -->
+                    </select>
+                    <button id="refresh-models-btn" title="Refresh model list">&#x21bb;</button>
+                </label>
+                <span id="session-label"></span>
+                <span id="activity-label"></span>
+                <button id="save-chat-btn" title="Save conversation as Markdown">Save Chat</button>
+                <button id="clear-chat-btn" title="Clear chat display (session continues)">Clear</button>
+                <span id="connection-status" class="disconnected">disconnected</span>
+            </div>
+        </header>
+
+        <main id="chat-area">
+            <!-- Messages will be appended here -->
+        </main>
+
+        <div id="queue-area" style="display:none"></div>
+
+        <details id="log-panel">
+            <summary>Server Logs</summary>
+            <div id="log-content"></div>
+        </details>
+
+        <footer>
+            <div id="input-area" style="position:relative">
+                <div id="predict-popup" style="display:none"></div>
+                <textarea id="prompt-input" placeholder="Type a message... (Shift+Enter to send, Tab to predict)" rows="5"></textarea>
+                <div id="buttons">
+                    <button id="send-btn" title="Send (Shift+Enter)">Send</button>
+                    <button id="cancel-btn" title="Cancel" disabled>Cancel</button>
+                    <button id="queue-btn" title="Add to queue">Queue</button>
+                </div>
+            </div>
+        </footer>
+    </div>
+    <script src="app.js?v=33"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (e2e tests)
+node_modules/
+e2e/test-results/
+e2e/playwright-report/
+
+# Quarkus
+.quarkus/
