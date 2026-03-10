@@ -112,6 +112,49 @@ public class ChatService {
     /** Maximum number of retries when context length is exceeded. */
     private static final int MAX_CONTEXT_RETRIES = 3;
 
+    /** Default max_tokens when max_model_len is unknown (conservative for small models). */
+    private static final int DEFAULT_MAX_TOKENS = 1024;
+
+    /** Upper bound for max_tokens to avoid excessive generation. */
+    private static final int MAX_TOKENS_CAP = 8192;
+
+    /** Estimated average tokens per message for send limit calculation. */
+    private static final int ESTIMATED_TOKENS_PER_MESSAGE = 200;
+
+    /** Estimated characters per token for budget calculation (conservative for mixed ja/en). */
+    private static final int CHARS_PER_TOKEN = 3;
+
+    /**
+     * Calculates max_tokens from the model's max_model_len.
+     * Uses half the context for output, capped at MAX_TOKENS_CAP.
+     *
+     * @param maxModelLen the model's max_model_len, or -1 if unknown
+     * @return max_tokens value to use
+     */
+    static int calculateMaxTokens(int maxModelLen) {
+        if (maxModelLen <= 0) {
+            return DEFAULT_MAX_TOKENS;
+        }
+        return Math.min(maxModelLen / 2, MAX_TOKENS_CAP);
+    }
+
+    /**
+     * Calculates the maximum number of messages to send to the model.
+     * Reserves space for max_tokens output within the context window.
+     *
+     * @param maxModelLen the model's max_model_len, or -1 if unknown
+     * @param maxTokens   the max_tokens value for output
+     * @return maximum number of messages to include in the request
+     */
+    static int calculateSendLimit(int maxModelLen, int maxTokens) {
+        if (maxModelLen <= 0) {
+            return 6; // conservative default for unknown context size
+        }
+        int inputBudget = maxModelLen - maxTokens;
+        int limit = inputBudget / ESTIMATED_TOKENS_PER_MESSAGE;
+        return Math.max(2, Math.min(limit, 50)); // at least 2, at most 50
+    }
+
     public void sendPrompt(String userId, String prompt, String model, boolean noThink,
                            List<String> imageDataUrls, Consumer<ChatEvent> sender) {
         if (isBusy(userId)) {
@@ -130,6 +173,11 @@ public class ChatService {
             // Send status: busy
             sender.accept(ChatEvent.status(model, null, true));
 
+            // Calculate max_tokens and send limit from model's max_model_len
+            int maxModelLen = client.getMaxModelLen(model);
+            int maxTokens = calculateMaxTokens(maxModelLen);
+            int sendLimit = calculateSendLimit(maxModelLen, maxTokens);
+
             // Build history with new user message
             List<ChatMessage> history = getHistory(userId);
             boolean applyNoThink = noThink && model.toLowerCase().startsWith("qwen3");
@@ -137,17 +185,29 @@ public class ChatService {
             history.add(new ChatMessage.User(prompt, images));
             trimHistory(history);
 
+            // Build a window of recent messages to send (not the full history)
+            List<ChatMessage> sendHistory = recentWindow(history, sendLimit);
+
+            // Pre-trim to fit within the model's context budget
+            int charBudget = (maxModelLen > 0 ? maxModelLen - maxTokens : 2048) * CHARS_PER_TOKEN;
+            preTrimToFit(sendHistory, charBudget);
+
             logger.info("User=" + userId + " model=" + model
                     + " noThink=" + noThink + " applyNoThink=" + applyNoThink
                     + " images=" + images.size()
-                    + " history=" + history.size() + " prompt="
+                    + " history=" + history.size()
+                    + " sendHistory=" + sendHistory.size()
+                    + " maxModelLen=" + maxModelLen
+                    + " maxTokens=" + maxTokens
+                    + " charBudget=" + charBudget
+                    + " prompt="
                     + prompt.substring(0, Math.min(prompt.length(), 80)));
 
-            // Retry loop: trim history aggressively on context length overflow
+            // Send (with safety-net retry in case estimation was off)
             String response = null;
             for (int attempt = 0; attempt < MAX_CONTEXT_RETRIES; attempt++) {
                 try {
-                    response = client.sendPrompt(model, history, applyNoThink, new VllmClient.StreamCallback() {
+                    response = client.sendPrompt(model, sendHistory, applyNoThink, maxTokens, new VllmClient.StreamCallback() {
                         @Override
                         public void onDelta(String content) {
                             sender.accept(ChatEvent.delta(content));
@@ -163,18 +223,19 @@ public class ChatService {
                             sender.accept(ChatEvent.error(message));
                         }
                     });
-                    break; // success or non-context error
+                    break; // success
                 } catch (ContextLengthExceededException e) {
-                    int removed = trimHistoryAggressive(history);
-                    if (removed == 0) {
-                        sender.accept(ChatEvent.error("Context too long even after trimming all history"));
+                    // Safety net: reduce budget by half and re-trim
+                    charBudget = charBudget / 2;
+                    preTrimToFit(sendHistory, charBudget);
+                    logger.info("Context length exceeded for user=" + userId
+                            + ", re-trimming with charBudget=" + charBudget
+                            + " sendHistory=" + sendHistory.size()
+                            + " (attempt " + (attempt + 1) + ")");
+                    if (sendHistory.isEmpty()) {
+                        sender.accept(ChatEvent.error("Context too long even after trimming"));
                         break;
                     }
-                    sender.accept(ChatEvent.delta("[Context too long, trimming history... (attempt "
-                            + (attempt + 1) + ")]\n"));
-                    logger.info("Context length exceeded for user=" + userId
-                            + ", trimmed " + removed + " messages, " + history.size()
-                            + " remaining (attempt " + (attempt + 1) + ")");
                 }
             }
 
@@ -242,6 +303,24 @@ public class ChatService {
     }
 
     /**
+     * Returns a mutable copy of the most recent messages from the history,
+     * limited to {@code limit} messages and ensuring the window starts with a user message.
+     *
+     * @param history the full conversation history
+     * @param limit   maximum number of messages to include
+     * @return a new mutable list containing the recent window
+     */
+    static List<ChatMessage> recentWindow(List<ChatMessage> history, int limit) {
+        int size = history.size();
+        int start = Math.max(0, size - limit);
+        // Ensure window starts with a user message
+        while (start < size && !(history.get(start) instanceof ChatMessage.User)) {
+            start++;
+        }
+        return new ArrayList<>(history.subList(start, size));
+    }
+
+    /**
      * Trims conversation history to the max limit.
      * Ensures history starts with a user message.
      */
@@ -255,29 +334,71 @@ public class ChatService {
     }
 
     /**
-     * Aggressively trims history by removing half the messages.
-     * Used when context length is exceeded despite normal trimming.
-     * Ensures history starts with a user message after trimming.
-     *
-     * @return the number of messages removed
+     * Pre-trims sendHistory to fit within the character budget.
+     * Strategy:
+     * 1. Remove old messages from the front (oldest first)
+     * 2. If still over budget, truncate the last user message from the END
+     *    (preserves the user's prompt and the beginning of fetched content)
+     * 3. Repeat until within budget
      */
-    int trimHistoryAggressive(List<ChatMessage> history) {
-        if (history.size() <= 2) {
-            return 0;
+    void preTrimToFit(List<ChatMessage> history, int charBudget) {
+        int totalChars = estimateTotalChars(history);
+        if (totalChars <= charBudget) return;
+
+        int originalSize = history.size();
+
+        // Phase 1: remove old messages from the front (keep at least the last one)
+        while (totalChars > charBudget && history.size() > 1) {
+            ChatMessage removed = history.remove(0);
+            totalChars = estimateTotalChars(history);
         }
-        int toRemove = history.size() / 2;
-        int removed = 0;
-        for (int i = 0; i < toRemove; i++) {
+        // Ensure starts with a user message
+        while (history.size() > 1 && !(history.get(0) instanceof ChatMessage.User)) {
             history.remove(0);
-            removed++;
+            totalChars = estimateTotalChars(history);
         }
-        // Ensure history starts with a user message
-        while (!history.isEmpty() && !(history.get(0) instanceof ChatMessage.User)) {
-            history.remove(0);
-            removed++;
+
+        // Phase 2: truncate the last user message content from the END
+        if (totalChars > charBudget && !history.isEmpty()) {
+            int lastUserIdx = -1;
+            for (int i = history.size() - 1; i >= 0; i--) {
+                if (history.get(i) instanceof ChatMessage.User) {
+                    lastUserIdx = i;
+                    break;
+                }
+            }
+            if (lastUserIdx >= 0) {
+                ChatMessage.User msg = (ChatMessage.User) history.get(lastUserIdx);
+                String content = msg.content();
+                // Calculate how many chars to keep
+                int otherChars = totalChars - content.length();
+                int allowedForContent = Math.max(100, charBudget - otherChars);
+                if (allowedForContent < content.length()) {
+                    String trimmed = content.substring(0, allowedForContent)
+                            + "\n[... content truncated to fit context limit]";
+                    history.set(lastUserIdx, new ChatMessage.User(trimmed, msg.imageDataUrls()));
+                    logger.info("Pre-trim: truncated last user message from "
+                            + content.length() + " to " + trimmed.length() + " chars");
+                }
+            }
         }
-        logger.info("Aggressive trim: removed " + removed + " messages, "
-                + history.size() + " remaining");
-        return removed;
+
+        logger.info("Pre-trim: " + originalSize + " -> " + history.size()
+                + " messages, budget=" + charBudget);
+    }
+
+    /**
+     * Estimates total character count across all messages in the history.
+     */
+    static int estimateTotalChars(List<ChatMessage> history) {
+        int total = 0;
+        for (ChatMessage msg : history) {
+            if (msg instanceof ChatMessage.User u) {
+                total += u.content().length();
+            } else if (msg instanceof ChatMessage.Assistant a) {
+                total += a.content().length();
+            }
+        }
+        return total;
     }
 }

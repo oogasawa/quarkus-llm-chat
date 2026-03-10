@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -121,10 +122,11 @@ class VllmClientTest {
         List<ChatMessage> messages = List.of(
                 new ChatMessage.User("hello")
         );
-        String body = VllmClient.buildRequestBody("test-model", messages, false);
+        String body = VllmClient.buildRequestBody("test-model", messages, false, 2048);
 
         assertTrue(body.contains("\"model\":\"test-model\""));
         assertTrue(body.contains("\"stream\":true"));
+        assertTrue(body.contains("\"max_tokens\":2048"));
         assertTrue(body.contains("\"role\":\"user\""));
         assertTrue(body.contains("\"content\":\"hello\""));
     }
@@ -136,7 +138,7 @@ class VllmClientTest {
                 new ChatMessage.Assistant("hi"),
                 new ChatMessage.User("how are you")
         );
-        String body = VllmClient.buildRequestBody("Qwen/Qwen2.5-Coder-32B-Instruct", messages, false);
+        String body = VllmClient.buildRequestBody("Qwen/Qwen2.5-Coder-32B-Instruct", messages, false, 4096);
 
         assertTrue(body.contains("\"model\":\"Qwen/Qwen2.5-Coder-32B-Instruct\""));
         assertTrue(body.contains("\"content\":\"hello\""));
@@ -149,7 +151,7 @@ class VllmClientTest {
         List<ChatMessage> messages = List.of(
                 new ChatMessage.User("line1\nline2\t\"quoted\"")
         );
-        String body = VllmClient.buildRequestBody("model", messages, false);
+        String body = VllmClient.buildRequestBody("model", messages, false, 2048);
 
         assertTrue(body.contains("\\n"));
         assertTrue(body.contains("\\t"));
@@ -159,7 +161,7 @@ class VllmClientTest {
     @Test
     void buildRequestBody_emptyMessages() {
         List<ChatMessage> messages = List.of();
-        String body = VllmClient.buildRequestBody("model", messages, false);
+        String body = VllmClient.buildRequestBody("model", messages, false, 2048);
         assertTrue(body.contains("\"messages\":[]"));
     }
 
@@ -176,7 +178,7 @@ class VllmClientTest {
             history.add(new ChatMessage.User("hello"));
 
             var errors = new ArrayList<String>();
-            String result = client.sendPrompt("model", history, false, new VllmClient.StreamCallback() {
+            String result = client.sendPrompt("model", history, false, 2048, new VllmClient.StreamCallback() {
                 @Override public void onDelta(String content) {}
                 @Override public void onComplete(long durationMs) {}
                 @Override public void onError(String message) { errors.add(message); }
@@ -338,5 +340,81 @@ class VllmClientTest {
     void isContextLengthError_false() {
         assertFalse(VllmClient.isContextLengthError("some other error"));
         assertFalse(VllmClient.isContextLengthError(null));
+    }
+
+    // --- parseMaxModelLens tests ---
+
+    @Test
+    void parseMaxModelLens_singleModel() {
+        String json = "{\"object\":\"list\",\"data\":[{\"id\":\"llm-jp-3-3.7b-instruct\","
+                + "\"object\":\"model\",\"max_model_len\":4096}]}";
+        Map<String, Integer> result = VllmClient.parseMaxModelLens(json);
+        assertEquals(1, result.size());
+        assertEquals(4096, result.get("llm-jp-3-3.7b-instruct"));
+    }
+
+    @Test
+    void parseMaxModelLens_multipleModels() {
+        String json = "{\"data\":[{\"id\":\"model-a\",\"max_model_len\":4096},"
+                + "{\"id\":\"model-b\",\"max_model_len\":262144}]}";
+        Map<String, Integer> result = VllmClient.parseMaxModelLens(json);
+        assertEquals(2, result.size());
+        assertEquals(4096, result.get("model-a"));
+        assertEquals(262144, result.get("model-b"));
+    }
+
+    @Test
+    void parseMaxModelLens_realisticVllmResponse() {
+        String json = "{\"object\":\"list\",\"data\":[{\"id\":\"/models/Qwen3-Coder-30B-A3B-Instruct\","
+                + "\"object\":\"model\",\"created\":1771827094,\"owned_by\":\"vllm\","
+                + "\"root\":\"/models/Qwen3-Coder-30B-A3B-Instruct\",\"parent\":null,"
+                + "\"max_model_len\":262144,\"permission\":[{\"id\":\"modelperm-123\"}]}]}";
+        Map<String, Integer> result = VllmClient.parseMaxModelLens(json);
+        assertEquals(262144, result.get("/models/Qwen3-Coder-30B-A3B-Instruct"));
+    }
+
+    @Test
+    void parseMaxModelLens_noMaxModelLen() {
+        String json = "{\"data\":[{\"id\":\"model-a\",\"object\":\"model\"}]}";
+        Map<String, Integer> result = VllmClient.parseMaxModelLens(json);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void parseMaxModelLens_emptyData() {
+        String json = "{\"data\":[]}";
+        Map<String, Integer> result = VllmClient.parseMaxModelLens(json);
+        assertTrue(result.isEmpty());
+    }
+
+    // --- getMaxModelLen tests ---
+
+    @Test
+    void getMaxModelLen_unknownModel() {
+        VllmClient client = new VllmClient("http://localhost:8000");
+        assertEquals(-1, client.getMaxModelLen("unknown-model"));
+    }
+
+    // --- buildRequestBody max_tokens tests ---
+
+    @Test
+    void buildRequestBody_withMaxTokens() {
+        List<ChatMessage> messages = List.of(new ChatMessage.User("hello"));
+        String body = VllmClient.buildRequestBody("model", messages, false, 4096);
+        assertTrue(body.contains("\"max_tokens\":4096"));
+    }
+
+    @Test
+    void buildRequestBody_zeroMaxTokens_omitted() {
+        List<ChatMessage> messages = List.of(new ChatMessage.User("hello"));
+        String body = VllmClient.buildRequestBody("model", messages, false, 0);
+        assertFalse(body.contains("max_tokens"));
+    }
+
+    @Test
+    void buildRequestBody_negativeMaxTokens_omitted() {
+        List<ChatMessage> messages = List.of(new ChatMessage.User("hello"));
+        String body = VllmClient.buildRequestBody("model", messages, false, -1);
+        assertFalse(body.contains("max_tokens"));
     }
 }

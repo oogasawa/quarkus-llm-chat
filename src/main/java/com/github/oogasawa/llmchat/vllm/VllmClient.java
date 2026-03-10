@@ -23,7 +23,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
@@ -43,6 +45,7 @@ public class VllmClient {
     private final String baseUrl;
     private final HttpClient httpClient;
     private volatile List<String> cachedModels = List.of();
+    private volatile Map<String, Integer> cachedMaxModelLen = Map.of();
 
     /**
      * Callback interface for streaming responses.
@@ -116,8 +119,10 @@ public class VllmClient {
                 return List.of();
             }
 
-            List<String> ids = parseModelIds(response.body());
+            String body = response.body();
+            List<String> ids = parseModelIds(body);
             this.cachedModels = ids;
+            this.cachedMaxModelLen = parseMaxModelLens(body);
             return ids;
 
         } catch (InterruptedException e) {
@@ -186,22 +191,105 @@ public class VllmClient {
     }
 
     /**
+     * Returns the cached max_model_len for the given model, or -1 if unknown.
+     *
+     * @param model the model name
+     * @return max_model_len, or -1 if not cached
+     */
+    public int getMaxModelLen(String model) {
+        return cachedMaxModelLen.getOrDefault(model, -1);
+    }
+
+    /**
+     * Parses model IDs and their max_model_len from the /v1/models JSON response.
+     *
+     * <p>Scans for pairs of {@code "id":"..."} and {@code "max_model_len":NNN}
+     * within each object in the data array.</p>
+     *
+     * @param json the response body
+     * @return map of model ID to max_model_len
+     */
+    static Map<String, Integer> parseMaxModelLens(String json) {
+        Map<String, Integer> result = new HashMap<>();
+        int dataIdx = json.indexOf("\"data\"");
+        if (dataIdx < 0) return result;
+        int arrStart = json.indexOf('[', dataIdx);
+        if (arrStart < 0) return result;
+
+        // Find each object in the data array
+        String idMarker = "\"id\":\"";
+        String lenMarker = "\"max_model_len\":";
+        int i = arrStart;
+        while (i < json.length()) {
+            int objStart = json.indexOf('{', i);
+            if (objStart < 0) break;
+
+            // Find matching closing brace (handle nested objects)
+            int depth = 0;
+            int objEnd = objStart;
+            for (int j = objStart; j < json.length(); j++) {
+                char c = json.charAt(j);
+                if (c == '{') depth++;
+                else if (c == '}') {
+                    depth--;
+                    if (depth == 0) { objEnd = j; break; }
+                }
+            }
+            if (objEnd <= objStart) break;
+
+            String obj = json.substring(objStart, objEnd + 1);
+
+            // Extract id
+            int idIdx = obj.indexOf(idMarker);
+            String id = null;
+            if (idIdx >= 0) {
+                int start = idIdx + idMarker.length();
+                id = unescapeJsonString(obj, start);
+            }
+
+            // Extract max_model_len
+            int lenIdx = obj.indexOf(lenMarker);
+            if (id != null && lenIdx >= 0) {
+                int numStart = lenIdx + lenMarker.length();
+                int numEnd = numStart;
+                while (numEnd < obj.length() && (Character.isDigit(obj.charAt(numEnd)))) {
+                    numEnd++;
+                }
+                if (numEnd > numStart) {
+                    try {
+                        int maxLen = Integer.parseInt(obj.substring(numStart, numEnd));
+                        result.put(id, maxLen);
+                    } catch (NumberFormatException e) {
+                        // ignore
+                    }
+                }
+            }
+
+            i = objEnd + 1;
+        }
+        return result;
+    }
+
+    /**
      * Sends a prompt to the vLLM server and streams the response.
      *
      * <p>The caller provides the full conversation history (including the new user message).
      * This method sends the request and streams the response.
      * History management (trimming, rollback) is the caller's responsibility.</p>
      *
-     * @param model    the model name
-     * @param history  the conversation history (will NOT be modified)
-     * @param callback callback for streaming events
+     * @param model     the model name
+     * @param history   the conversation history (will NOT be modified)
+     * @param noThink   whether to disable thinking mode
+     * @param maxTokens maximum tokens to generate (0 or negative = omit from request)
+     * @param callback  callback for streaming events
      * @return the full assistant response text, or null on failure
      */
-    public String sendPrompt(String model, List<ChatMessage> history, boolean noThink, StreamCallback callback) {
+    public String sendPrompt(String model, List<ChatMessage> history, boolean noThink,
+                             int maxTokens, StreamCallback callback) {
         long startTime = System.currentTimeMillis();
 
         try {
-            String requestBody = buildRequestBody(model, history, noThink);
+            String requestBody = buildRequestBody(model, history, noThink, maxTokens);
             HttpResponse<Stream<String>> response = null;
 
             response = sendWithRetry(requestBody);
@@ -321,14 +409,19 @@ public class VllmClient {
     /**
      * Builds the JSON request body for the OpenAI chat completions API.
      *
-     * @param model    the model name
-     * @param messages the conversation history
+     * @param model     the model name
+     * @param messages  the conversation history
+     * @param noThink   whether to disable thinking mode
+     * @param maxTokens maximum tokens to generate (0 or negative = omit)
      * @return JSON string
      */
-    static String buildRequestBody(String model, List<ChatMessage> messages, boolean noThink) {
+    static String buildRequestBody(String model, List<ChatMessage> messages, boolean noThink, int maxTokens) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\"model\":\"").append(escapeJson(model)).append("\",");
         sb.append("\"stream\":true,");
+        if (maxTokens > 0) {
+            sb.append("\"max_tokens\":").append(maxTokens).append(",");
+        }
         if (noThink) {
             sb.append("\"chat_template_kwargs\":{\"enable_thinking\":false},");
         }

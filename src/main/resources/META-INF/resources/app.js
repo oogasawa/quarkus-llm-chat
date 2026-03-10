@@ -609,6 +609,17 @@
             }
             var footer = document.createElement('div');
             footer.className = 'message-footer';
+            var copyBtn = document.createElement('button');
+            copyBtn.className = 'copy-md-btn';
+            copyBtn.textContent = 'Copy';
+            copyBtn.title = 'Copy prompt text';
+            copyBtn.addEventListener('click', function () {
+                navigator.clipboard.writeText(text).then(function () {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+                });
+            });
+            footer.appendChild(copyBtn);
             var timeSpan = document.createElement('span');
             timeSpan.textContent = formatTime(new Date());
             footer.appendChild(timeSpan);
@@ -1041,13 +1052,13 @@
         var sendImages = images || pendingImages.slice();
         clearPendingImages();
 
-        // Append fetched URL contents to prompt
+        // Prepend fetched URL contents before user's question (RAG pattern: context first, question last)
         var sendText = text;
         if (fetchedUrls.length > 0) {
             var urlParts = fetchedUrls.map(function (f) {
-                return '\n\n---\nContent of ' + f.url + ':\n' + f.content;
+                return '<reference url="' + f.url + '">\n' + f.content + '\n</reference>';
             });
-            sendText = text + urlParts.join('');
+            sendText = urlParts.join('\n\n') + '\n\n---\n\n' + text;
             fetchedUrls = [];
             renderFetchedUrls();
         }
@@ -1518,27 +1529,7 @@
     }
 
     function renderFetchedUrls() {
-        var existing = imagePreviewArea.querySelectorAll('.fetched-url-item');
-        existing.forEach(function (el) { el.remove(); });
-
-        fetchedUrls.forEach(function (f, idx) {
-            var item = document.createElement('div');
-            item.className = 'fetched-url-item';
-            var label = document.createElement('span');
-            label.className = 'fetched-url-label';
-            label.textContent = f.url.length > 50 ? f.url.substring(0, 50) + '...' : f.url;
-            label.title = f.url + ' (' + f.content.length + ' chars)';
-            item.appendChild(label);
-            var removeBtn = document.createElement('button');
-            removeBtn.className = 'remove-image-btn';
-            removeBtn.textContent = '\u00d7';
-            removeBtn.addEventListener('click', function () {
-                fetchedUrls.splice(idx, 1);
-                renderFetchedUrls();
-            });
-            item.appendChild(removeBtn);
-            imagePreviewArea.appendChild(item);
-        });
+        // No-op: fetched URL indicators removed per user request
     }
 
     async function fetchUrlContent(url) {
@@ -1568,8 +1559,8 @@
     var fetchPopupTimeout = null;
 
     function showFetchButtons() {
-        // Remove old fetch buttons
-        var old = imagePreviewArea.querySelectorAll('.url-fetch-btn');
+        // Remove old fetch button
+        var old = document.querySelectorAll('.url-fetch-btn');
         old.forEach(function (el) { el.remove(); });
 
         var text = promptInput.value;
@@ -1581,20 +1572,19 @@
         var newUrls = urls.filter(function (u) { return alreadyFetched.indexOf(u) < 0; });
         if (newUrls.length === 0) return;
 
-        newUrls.forEach(function (url) {
-            var btn = document.createElement('button');
-            btn.className = 'url-fetch-btn';
-            btn.textContent = 'Fetch: ' + (url.length > 40 ? url.substring(0, 40) + '...' : url);
-            btn.title = url;
-            btn.addEventListener('click', function () {
-                btn.textContent = 'Fetching...';
-                btn.disabled = true;
-                fetchUrlContent(url).then(function () {
-                    btn.remove();
+        var btn = document.createElement('button');
+        btn.className = 'url-fetch-btn';
+        btn.textContent = 'Fetch ' + newUrls.length + ' URL' + (newUrls.length > 1 ? 's' : '');
+        btn.title = newUrls.join('\n');
+        btn.addEventListener('click', function () {
+            btn.textContent = 'Fetching...';
+            btn.disabled = true;
+            Promise.all(newUrls.map(function (url) { return fetchUrlContent(url); }))
+                .then(function () {
+                    btn.textContent = 'Fetched ' + newUrls.length + ' URL' + (newUrls.length > 1 ? 's' : '');
                 });
-            });
-            imagePreviewArea.appendChild(btn);
         });
+        imagePreviewArea.appendChild(btn);
     }
 
     // Debounced URL detection on input
