@@ -56,9 +56,13 @@ Open `http://localhost:8090` in your browser.
 - **Multi-tenant** — per-user conversation history and SSE streams (BasicAuth)
 - **Prompt queue** — queue up prompts while the AI is responding
 - **Multiple LLM server support** — connect to vLLM, Ollama, and other OpenAI-compatible servers simultaneously
+- **URL fetch** — paste URLs in your prompt, click the Fetch button, and the page content is automatically prepended as reference context (RAG-style: context first, question last)
+- **Image OCR** — paste or drag-and-drop images into the prompt area; they are sent to vision-capable models for OCR and analysis
+- **Smart context management** — pre-trims conversation history and fetched content to fit within the model's context window, preserving the user's question and the beginning of reference material
 - Real-time streaming responses (SSE) with Markdown rendering
 - Dynamic model list with refresh button
 - Save conversation history as Markdown file
+- Copy button on both user prompts and assistant responses
 - 10 color themes
 
 ## REST API
