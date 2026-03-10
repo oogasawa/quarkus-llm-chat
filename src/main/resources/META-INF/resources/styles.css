@@ -910,3 +910,116 @@ footer {
     color: var(--text-secondary);
     font-style: italic;
 }
+
+/* --- Image preview area --- */
+
+#image-preview-area {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0;
+}
+
+#image-preview-area:empty {
+    display: none;
+}
+
+.image-preview-item {
+    position: relative;
+    display: inline-block;
+}
+
+.image-preview-item img {
+    max-height: 80px;
+    max-width: 120px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    object-fit: cover;
+}
+
+.image-preview-item .remove-image-btn {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #e44;
+    color: #fff;
+    border: none;
+    font-size: 12px;
+    line-height: 18px;
+    text-align: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+#image-btn {
+    font-size: 16px;
+    padding: 4px 8px;
+    cursor: pointer;
+}
+
+.message.user .user-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.message.user .user-images img {
+    max-height: 200px;
+    max-width: 300px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+}
+
+/* --- URL fetch buttons and fetched items --- */
+
+.url-fetch-btn {
+    display: inline-block;
+    margin: 2px 4px;
+    padding: 3px 10px;
+    font-size: 12px;
+    border-radius: 4px;
+    border: 1px solid var(--accent-color);
+    background: transparent;
+    color: var(--accent-color);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 300px;
+}
+
+.url-fetch-btn:hover {
+    background: var(--accent-color);
+    color: var(--bg-primary);
+}
+
+.url-fetch-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.fetched-url-item {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    margin: 2px 4px;
+    font-size: 12px;
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+}
+
+.fetched-url-label {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 250px;
+}

@@ -66,7 +66,7 @@ class ChatMessageTest {
                 new ChatMessage.User("hello"),
                 new ChatMessage.Assistant("hi there")
         );
-        String body = VllmClient.buildRequestBody("test-model", messages);
+        String body = VllmClient.buildRequestBody("test-model", messages, false);
 
         assertTrue(body.contains("\"model\":\"test-model\""));
         assertTrue(body.contains("\"stream\":true"));
@@ -79,7 +79,7 @@ class ChatMessageTest {
     @Test
     void buildRequestBody_emptyMessages() {
         List<ChatMessage> messages = List.of();
-        String body = VllmClient.buildRequestBody("model", messages);
+        String body = VllmClient.buildRequestBody("model", messages, false);
         assertTrue(body.contains("\"messages\":[]"));
     }
 
@@ -89,7 +89,7 @@ class ChatMessageTest {
                 new ChatMessage.User("line1\nline2"),
                 new ChatMessage.Assistant("say \"hello\"")
         );
-        String body = VllmClient.buildRequestBody("model", messages);
+        String body = VllmClient.buildRequestBody("model", messages, false);
 
         assertTrue(body.contains("\\n"));
         assertTrue(body.contains("\\\"hello\\\""));

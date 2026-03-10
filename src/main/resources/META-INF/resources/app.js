@@ -62,8 +62,15 @@
     const queueArea = document.getElementById('queue-area');
     const activityLabel = document.getElementById('activity-label');
     const inputArea = document.getElementById('input-area');
-    const logPanel = document.getElementById('log-panel');
-    const logContent = document.getElementById('log-content');
+    const imagePreviewArea = document.getElementById('image-preview-area');
+    const imageBtn = document.getElementById('image-btn');
+    const imageFileInput = document.getElementById('image-file-input');
+
+    // Pending images as data URLs
+    var pendingImages = [];
+
+    // Fetched URL contents: [{url, content}]
+    var fetchedUrls = [];
 
     let thinkingStartTime = null;   // Date.now() when thinking started
     let thinkingTimer = null;       // setInterval ID
@@ -271,7 +278,6 @@
                 handlePrompt(event);
                 break;
             case 'log':
-                appendLog(event);
                 break;
         }
     }
@@ -583,11 +589,24 @@
         }
     }
 
-    function appendMessage(className, text) {
+    function appendMessage(className, text, images) {
         var div = document.createElement('div');
         div.className = 'message ' + className;
         div.textContent = text;
         if (className === 'user') {
+            if (images && images.length > 0) {
+                var imgDiv = document.createElement('div');
+                imgDiv.className = 'user-images';
+                images.forEach(function (dataUrl) {
+                    var img = document.createElement('img');
+                    img.src = dataUrl;
+                    img.addEventListener('click', function () {
+                        window.open(dataUrl, '_blank');
+                    });
+                    imgDiv.appendChild(img);
+                });
+                div.appendChild(imgDiv);
+            }
             var footer = document.createElement('div');
             footer.className = 'message-footer';
             var timeSpan = document.createElement('span');
@@ -1017,9 +1036,24 @@
         }
     }
 
-    async function executePrompt(text) {
-        // Display user message
-        appendMessage('user', text);
+    async function executePrompt(text, images) {
+        // Capture and clear pending images
+        var sendImages = images || pendingImages.slice();
+        clearPendingImages();
+
+        // Append fetched URL contents to prompt
+        var sendText = text;
+        if (fetchedUrls.length > 0) {
+            var urlParts = fetchedUrls.map(function (f) {
+                return '\n\n---\nContent of ' + f.url + ':\n' + f.content;
+            });
+            sendText = text + urlParts.join('');
+            fetchedUrls = [];
+            renderFetchedUrls();
+        }
+
+        // Display user message with images (show original text, not the appended content)
+        appendMessage('user', text, sendImages);
         busy = true;
         cancelBtn.disabled = false;
 
@@ -1035,10 +1069,14 @@
 
         // Submit prompt via POST; events arrive through EventSource
         try {
+            var payload = { text: sendText, model: modelSelect.value, noThink: !document.getElementById('think-toggle').checked };
+            if (sendImages.length > 0) {
+                payload.images = sendImages;
+            }
             var response = await fetch(apiUrl('api/chat'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: text, model: modelSelect.value })
+                body: JSON.stringify(payload)
             });
             if (!response.ok) {
                 stopThinkingTimer();
@@ -1381,66 +1419,193 @@
             });
     }
 
-    // --- Server Log Panel ---
+    // --- Image handling ---
 
-    var MAX_LOG_LINES = 500;
-    var logLoaded = false;
-
-    function formatLogTime(ts) {
-        var d = new Date(ts);
-        var hh = String(d.getHours()).padStart(2, '0');
-        var mm = String(d.getMinutes()).padStart(2, '0');
-        var ss = String(d.getSeconds()).padStart(2, '0');
-        var ms = String(d.getMilliseconds()).padStart(3, '0');
-        return hh + ':' + mm + ':' + ss + '.' + ms;
-    }
-
-    function shortLogger(name) {
-        if (!name) return '';
-        var parts = name.split('.');
-        return parts[parts.length - 1];
-    }
-
-    function appendLog(event) {
-        if (!logPanel.open) return;
-        var line = document.createElement('div');
-        line.className = 'log-line log-' + (event.logLevel || 'INFO').toLowerCase();
-        var time = event.timestamp ? formatLogTime(event.timestamp) : '';
-        line.textContent = time + ' [' + (event.logLevel || '?') + '] '
-            + shortLogger(event.loggerName) + ': ' + (event.content || '');
-        logContent.appendChild(line);
-        trimLogLines();
-        logContent.scrollTop = logContent.scrollHeight;
-    }
-
-    function appendLogBatch(events) {
-        for (var i = 0; i < events.length; i++) {
-            var event = events[i];
-            var line = document.createElement('div');
-            line.className = 'log-line log-' + (event.logLevel || 'INFO').toLowerCase();
-            var time = event.timestamp ? formatLogTime(event.timestamp) : '';
-            line.textContent = time + ' [' + (event.logLevel || '?') + '] '
-                + shortLogger(event.loggerName) + ': ' + (event.content || '');
-            logContent.appendChild(line);
+    function addImageFromFile(file) {
+        if (!file || !file.type.startsWith('image/')) return;
+        // Limit: max 5 images, max 20MB each
+        if (pendingImages.length >= 5) {
+            appendMessage('error', 'Maximum 5 images per message');
+            return;
         }
-        trimLogLines();
-        logContent.scrollTop = logContent.scrollHeight;
+        if (file.size > 20 * 1024 * 1024) {
+            appendMessage('error', 'Image too large (max 20MB): ' + file.name);
+            return;
+        }
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            pendingImages.push(e.target.result);
+            renderImagePreviews();
+        };
+        reader.readAsDataURL(file);
     }
 
-    function trimLogLines() {
-        while (logContent.children.length > MAX_LOG_LINES) {
-            logContent.removeChild(logContent.firstChild);
+    function renderImagePreviews() {
+        imagePreviewArea.innerHTML = '';
+        pendingImages.forEach(function (dataUrl, idx) {
+            var item = document.createElement('div');
+            item.className = 'image-preview-item';
+            var img = document.createElement('img');
+            img.src = dataUrl;
+            item.appendChild(img);
+            var removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-image-btn';
+            removeBtn.textContent = '\u00d7';
+            removeBtn.addEventListener('click', function () {
+                pendingImages.splice(idx, 1);
+                renderImagePreviews();
+            });
+            item.appendChild(removeBtn);
+            imagePreviewArea.appendChild(item);
+        });
+    }
+
+    function clearPendingImages() {
+        pendingImages = [];
+        imagePreviewArea.innerHTML = '';
+    }
+
+    // File input button
+    imageBtn.addEventListener('click', function () {
+        imageFileInput.click();
+    });
+
+    imageFileInput.addEventListener('change', function () {
+        var files = imageFileInput.files;
+        for (var i = 0; i < files.length; i++) {
+            addImageFromFile(files[i]);
+        }
+        imageFileInput.value = '';
+    });
+
+    // Paste image from clipboard
+    promptInput.addEventListener('paste', function (e) {
+        var items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].type.startsWith('image/')) {
+                e.preventDefault();
+                addImageFromFile(items[i].getAsFile());
+            }
+        }
+    });
+
+    // Drag and drop images
+    inputArea.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        inputArea.style.outline = '2px dashed var(--accent-color)';
+    });
+    inputArea.addEventListener('dragleave', function () {
+        inputArea.style.outline = '';
+    });
+    inputArea.addEventListener('drop', function (e) {
+        e.preventDefault();
+        inputArea.style.outline = '';
+        var files = e.dataTransfer && e.dataTransfer.files;
+        if (!files) return;
+        for (var i = 0; i < files.length; i++) {
+            addImageFromFile(files[i]);
+        }
+    });
+
+    // --- URL fetch ---
+
+    var URL_REGEX = /https?:\/\/[^\s<>"']+/g;
+
+    function detectUrls(text) {
+        var matches = text.match(URL_REGEX);
+        return matches ? matches.filter(function (v, i, a) { return a.indexOf(v) === i; }) : [];
+    }
+
+    function renderFetchedUrls() {
+        var existing = imagePreviewArea.querySelectorAll('.fetched-url-item');
+        existing.forEach(function (el) { el.remove(); });
+
+        fetchedUrls.forEach(function (f, idx) {
+            var item = document.createElement('div');
+            item.className = 'fetched-url-item';
+            var label = document.createElement('span');
+            label.className = 'fetched-url-label';
+            label.textContent = f.url.length > 50 ? f.url.substring(0, 50) + '...' : f.url;
+            label.title = f.url + ' (' + f.content.length + ' chars)';
+            item.appendChild(label);
+            var removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-image-btn';
+            removeBtn.textContent = '\u00d7';
+            removeBtn.addEventListener('click', function () {
+                fetchedUrls.splice(idx, 1);
+                renderFetchedUrls();
+            });
+            item.appendChild(removeBtn);
+            imagePreviewArea.appendChild(item);
+        });
+    }
+
+    async function fetchUrlContent(url) {
+        // Check if already fetched
+        for (var i = 0; i < fetchedUrls.length; i++) {
+            if (fetchedUrls[i].url === url) return;
+        }
+        try {
+            var resp = await fetch('api/fetch-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            });
+            var data = await resp.json();
+            if (data.ok) {
+                fetchedUrls.push({ url: url, content: data.content });
+                renderFetchedUrls();
+            } else {
+                appendMessage('error', 'Fetch failed: ' + (data.error || 'unknown'));
+            }
+        } catch (e) {
+            appendMessage('error', 'Fetch failed: ' + e.message);
         }
     }
 
-    logPanel.addEventListener('toggle', function () {
-        if (logPanel.open && !logLoaded) {
-            logLoaded = true;
-            fetch(apiUrl('api/logs'))
-                .then(function (resp) { return resp.json(); })
-                .then(function (logs) { appendLogBatch(logs); })
-                .catch(function () { /* ignore */ });
-        }
+    // Show fetch buttons for detected URLs
+    var fetchPopupTimeout = null;
+
+    function showFetchButtons() {
+        // Remove old fetch buttons
+        var old = imagePreviewArea.querySelectorAll('.url-fetch-btn');
+        old.forEach(function (el) { el.remove(); });
+
+        var text = promptInput.value;
+        var urls = detectUrls(text);
+        if (urls.length === 0) return;
+
+        // Filter out already fetched URLs
+        var alreadyFetched = fetchedUrls.map(function (f) { return f.url; });
+        var newUrls = urls.filter(function (u) { return alreadyFetched.indexOf(u) < 0; });
+        if (newUrls.length === 0) return;
+
+        newUrls.forEach(function (url) {
+            var btn = document.createElement('button');
+            btn.className = 'url-fetch-btn';
+            btn.textContent = 'Fetch: ' + (url.length > 40 ? url.substring(0, 40) + '...' : url);
+            btn.title = url;
+            btn.addEventListener('click', function () {
+                btn.textContent = 'Fetching...';
+                btn.disabled = true;
+                fetchUrlContent(url).then(function () {
+                    btn.remove();
+                });
+            });
+            imagePreviewArea.appendChild(btn);
+        });
+    }
+
+    // Debounced URL detection on input
+    promptInput.addEventListener('input', function () {
+        if (fetchPopupTimeout) clearTimeout(fetchPopupTimeout);
+        fetchPopupTimeout = setTimeout(showFetchButtons, 500);
+    });
+
+    // Also detect on paste
+    promptInput.addEventListener('paste', function () {
+        setTimeout(showFetchButtons, 100);
     });
 
     // --- Init: load config, models, restore history/queue, connect EventSource ---

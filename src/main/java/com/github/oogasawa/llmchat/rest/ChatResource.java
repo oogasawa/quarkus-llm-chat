@@ -82,7 +82,7 @@ public class ChatResource {
     @Inject
     ObjectMapper objectMapper;
 
-    @ConfigProperty(name = "llm-chat.title", defaultValue = "LLM Chat")
+    @ConfigProperty(name = "llm-chat.title", defaultValue = "Local LLM")
     String appTitle;
 
     /** Per-user SSE connections: userId -> HttpServerResponse. */
@@ -228,8 +228,8 @@ public class ChatResource {
 
         Thread.startVirtualThread(() -> {
             try {
-                chatService.sendPrompt(userId, request.text, model,
-                        event -> emitSse(userId, event));
+                chatService.sendPrompt(userId, request.text, model, request.noThink,
+                        request.images, event -> emitSse(userId, event));
             } catch (Exception e) {
                 logger.log(Level.WARNING, "Chat prompt failed for user " + userId, e);
                 emitSse(userId, ChatEvent.error("Internal error: " + e.getMessage()));
@@ -313,6 +313,28 @@ public class ChatResource {
         return new AppConfig(appTitle);
     }
 
+    /**
+     * Fetches a URL and returns its text content.
+     */
+    @POST
+    @Path("/fetch-url")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public FetchResult fetchUrl(FetchRequest request) {
+        if (request == null || request.url == null || request.url.isBlank()) {
+            return new FetchResult(false, "", "Empty URL");
+        }
+        String url = request.url.trim();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return new FetchResult(false, "", "Invalid URL (must start with http:// or https://)");
+        }
+        String content = com.github.oogasawa.llmchat.service.UrlFetcher.fetchAndExtract(url);
+        if (content.startsWith("[Error]")) {
+            return new FetchResult(false, "", content);
+        }
+        return new FetchResult(true, content, null);
+    }
+
     // --- User extraction ---
 
     /**
@@ -375,8 +397,16 @@ public class ChatResource {
 
     public record ModelInfo(String name, String type, String server) {}
 
+    public static class FetchRequest {
+        public String url;
+    }
+
+    public record FetchResult(boolean ok, String content, String error) {}
+
     public static class PromptRequest {
         public String text;
         public String model;
+        public boolean noThink;
+        public List<String> images;
     }
 }

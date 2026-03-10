@@ -40,6 +40,13 @@
       <artifactId>quarkus-rest-jackson</artifactId>
     </dependency>
 
+    <!-- HTML parsing for URL fetch -->
+    <dependency>
+      <groupId>org.jsoup</groupId>
+      <artifactId>jsoup</artifactId>
+      <version>1.18.3</version>
+    </dependency>
+
     <!-- Test -->
     <dependency>
       <groupId>io.quarkus</groupId>

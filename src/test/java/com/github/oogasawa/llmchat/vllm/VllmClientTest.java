@@ -121,7 +121,7 @@ class VllmClientTest {
         List<ChatMessage> messages = List.of(
                 new ChatMessage.User("hello")
         );
-        String body = VllmClient.buildRequestBody("test-model", messages);
+        String body = VllmClient.buildRequestBody("test-model", messages, false);
 
         assertTrue(body.contains("\"model\":\"test-model\""));
         assertTrue(body.contains("\"stream\":true"));
@@ -136,7 +136,7 @@ class VllmClientTest {
                 new ChatMessage.Assistant("hi"),
                 new ChatMessage.User("how are you")
         );
-        String body = VllmClient.buildRequestBody("Qwen/Qwen2.5-Coder-32B-Instruct", messages);
+        String body = VllmClient.buildRequestBody("Qwen/Qwen2.5-Coder-32B-Instruct", messages, false);
 
         assertTrue(body.contains("\"model\":\"Qwen/Qwen2.5-Coder-32B-Instruct\""));
         assertTrue(body.contains("\"content\":\"hello\""));
@@ -149,7 +149,7 @@ class VllmClientTest {
         List<ChatMessage> messages = List.of(
                 new ChatMessage.User("line1\nline2\t\"quoted\"")
         );
-        String body = VllmClient.buildRequestBody("model", messages);
+        String body = VllmClient.buildRequestBody("model", messages, false);
 
         assertTrue(body.contains("\\n"));
         assertTrue(body.contains("\\t"));
@@ -159,7 +159,7 @@ class VllmClientTest {
     @Test
     void buildRequestBody_emptyMessages() {
         List<ChatMessage> messages = List.of();
-        String body = VllmClient.buildRequestBody("model", messages);
+        String body = VllmClient.buildRequestBody("model", messages, false);
         assertTrue(body.contains("\"messages\":[]"));
     }
 
@@ -176,7 +176,7 @@ class VllmClientTest {
             history.add(new ChatMessage.User("hello"));
 
             var errors = new ArrayList<String>();
-            String result = client.sendPrompt("model", history, new VllmClient.StreamCallback() {
+            String result = client.sendPrompt("model", history, false, new VllmClient.StreamCallback() {
                 @Override public void onDelta(String content) {}
                 @Override public void onComplete(long durationMs) {}
                 @Override public void onError(String message) { errors.add(message); }

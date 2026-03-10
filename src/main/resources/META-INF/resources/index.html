@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>quarkus-coder-agent</title>
-    <link rel="stylesheet" href="styles.css?v=27">
+    <title>Local LLM</title>
+    <link rel="stylesheet" href="styles.css?v=28">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
     <div id="login-screen" style="display:flex;align-items:center;justify-content:center;height:100vh;">
         <form id="login-form" style="text-align:center;">
-            <h2 style="margin-bottom:16px;">LLM Chat</h2>
+            <h2 style="margin-bottom:16px;">Quarkus Local LLM Interface</h2>
             <input id="login-user" type="text" placeholder="Username" autocomplete="username"
                    style="padding:8px 12px;font-size:16px;border-radius:4px;border:1px solid #555;background:#2a2a2a;color:#eee;width:220px;">
             <br><br>
@@ -19,7 +19,7 @@
     </div>
     <div id="app" style="display:none;">
         <header>
-            <h1>quarkus-coder-agent</h1>
+            <h1>Local LLM</h1>
             <div id="status-bar">
                 <label id="theme-label">Theme:
                     <select id="theme-select">
@@ -34,6 +34,10 @@
                         <option value="light-green">Light Green</option>
                         <option value="light-red">Light Red</option>
                     </select>
+                </label>
+                <label id="think-label">
+                    <input type="checkbox" id="think-toggle">
+                    Think
                 </label>
                 <label id="model-label">Model:
                     <select id="model-select">
@@ -57,16 +61,14 @@
 
         <div id="queue-area" style="display:none"></div>
 
-        <details id="log-panel">
-            <summary>Server Logs</summary>
-            <div id="log-content"></div>
-        </details>
-
         <footer>
             <div id="input-area" style="position:relative">
                 <div id="predict-popup" style="display:none"></div>
-                <textarea id="prompt-input" placeholder="Type a message... (Shift+Enter to send, Tab to predict)" rows="5"></textarea>
+                <div id="image-preview-area"></div>
+                <textarea id="prompt-input" placeholder="Type a message... (Shift+Enter to send, Tab to predict, paste/drop images)" rows="5"></textarea>
                 <div id="buttons">
+                    <button id="image-btn" title="Attach image">&#x1F4CE;</button>
+                    <input type="file" id="image-file-input" accept="image/*" multiple style="display:none">
                     <button id="send-btn" title="Send (Shift+Enter)">Send</button>
                     <button id="cancel-btn" title="Cancel" disabled>Cancel</button>
                     <button id="queue-btn" title="Add to queue">Queue</button>
@@ -74,6 +76,6 @@
             </div>
         </footer>
     </div>
-    <script src="app.js?v=36"></script>
+    <script src="app.js?v=40"></script>
 </body>
 </html>

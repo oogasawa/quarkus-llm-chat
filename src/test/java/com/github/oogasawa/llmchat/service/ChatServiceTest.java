@@ -133,7 +133,7 @@ class ChatServiceTest {
 
                 Thread worker = Thread.startVirtualThread(() -> {
                     started.countDown();
-                    service.sendPrompt("user1", "hello", "fake-model", events::add);
+                    service.sendPrompt("user1", "hello", "fake-model", false, null, events::add);
                 });
 
                 assertTrue(started.await(5, TimeUnit.SECONDS));
@@ -161,7 +161,7 @@ class ChatServiceTest {
             var done = new CountDownLatch(1);
 
             Thread.startVirtualThread(() -> {
-                service.sendPrompt("user1", "hello", "some-model", events::add);
+                service.sendPrompt("user1", "hello", "some-model", false, null, events::add);
                 done.countDown();
             });
 

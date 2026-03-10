@@ -197,11 +197,11 @@ public class VllmClient {
      * @param callback callback for streaming events
      * @return the full assistant response text, or null on failure
      */
-    public String sendPrompt(String model, List<ChatMessage> history, StreamCallback callback) {
+    public String sendPrompt(String model, List<ChatMessage> history, boolean noThink, StreamCallback callback) {
         long startTime = System.currentTimeMillis();
 
         try {
-            String requestBody = buildRequestBody(model, history);
+            String requestBody = buildRequestBody(model, history, noThink);
             HttpResponse<Stream<String>> response = null;
 
             response = sendWithRetry(requestBody);
@@ -325,21 +325,40 @@ public class VllmClient {
      * @param messages the conversation history
      * @return JSON string
      */
-    static String buildRequestBody(String model, List<ChatMessage> messages) {
+    static String buildRequestBody(String model, List<ChatMessage> messages, boolean noThink) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\"model\":\"").append(escapeJson(model)).append("\",");
         sb.append("\"stream\":true,");
+        if (noThink) {
+            sb.append("\"chat_template_kwargs\":{\"enable_thinking\":false},");
+        }
         sb.append("\"messages\":[");
 
         for (int i = 0; i < messages.size(); i++) {
             if (i > 0) sb.append(",");
             ChatMessage msg = messages.get(i);
-            String content = switch (msg) {
-                case ChatMessage.User u -> u.content();
-                case ChatMessage.Assistant a -> a.content();
-            };
             sb.append("{\"role\":\"").append(escapeJson(msg.role())).append("\",");
-            sb.append("\"content\":\"").append(escapeJson(content)).append("\"}");
+
+            if (msg instanceof ChatMessage.User u && u.hasImages()) {
+                // Multimodal content: array of image_url + text parts
+                sb.append("\"content\":[");
+                for (int j = 0; j < u.imageDataUrls().size(); j++) {
+                    if (j > 0) sb.append(",");
+                    sb.append("{\"type\":\"image_url\",\"image_url\":{\"url\":\"");
+                    sb.append(escapeJson(u.imageDataUrls().get(j)));
+                    sb.append("\"}}");
+                }
+                sb.append(",{\"type\":\"text\",\"text\":\"");
+                sb.append(escapeJson(u.content()));
+                sb.append("\"}]");
+            } else {
+                String content = switch (msg) {
+                    case ChatMessage.User u -> u.content();
+                    case ChatMessage.Assistant a -> a.content();
+                };
+                sb.append("\"content\":\"").append(escapeJson(content)).append("\"");
+            }
+            sb.append("}");
         }
 
         sb.append("]}");

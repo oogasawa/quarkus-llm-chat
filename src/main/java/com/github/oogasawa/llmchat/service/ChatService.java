@@ -112,7 +112,8 @@ public class ChatService {
     /** Maximum number of retries when context length is exceeded. */
     private static final int MAX_CONTEXT_RETRIES = 3;
 
-    public void sendPrompt(String userId, String prompt, String model, Consumer<ChatEvent> sender) {
+    public void sendPrompt(String userId, String prompt, String model, boolean noThink,
+                           List<String> imageDataUrls, Consumer<ChatEvent> sender) {
         if (isBusy(userId)) {
             sender.accept(ChatEvent.error("Already processing a prompt. Please wait or cancel."));
             return;
@@ -131,10 +132,14 @@ public class ChatService {
 
             // Build history with new user message
             List<ChatMessage> history = getHistory(userId);
-            history.add(new ChatMessage.User(prompt));
+            boolean applyNoThink = noThink && model.toLowerCase().startsWith("qwen3");
+            List<String> images = imageDataUrls != null ? imageDataUrls : List.of();
+            history.add(new ChatMessage.User(prompt, images));
             trimHistory(history);
 
             logger.info("User=" + userId + " model=" + model
+                    + " noThink=" + noThink + " applyNoThink=" + applyNoThink
+                    + " images=" + images.size()
                     + " history=" + history.size() + " prompt="
                     + prompt.substring(0, Math.min(prompt.length(), 80)));
 
@@ -142,7 +147,7 @@ public class ChatService {
             String response = null;
             for (int attempt = 0; attempt < MAX_CONTEXT_RETRIES; attempt++) {
                 try {
-                    response = client.sendPrompt(model, history, new VllmClient.StreamCallback() {
+                    response = client.sendPrompt(model, history, applyNoThink, new VllmClient.StreamCallback() {
                         @Override
                         public void onDelta(String content) {
                             sender.accept(ChatEvent.delta(content));

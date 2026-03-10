@@ -17,6 +17,8 @@
 
 package com.github.oogasawa.llmchat.vllm;
 
+import java.util.List;
+
 /**
  * Sealed interface representing a single message in the conversation history.
  *
@@ -32,11 +34,18 @@ public sealed interface ChatMessage {
     String role();
 
     /**
-     * A user message with text content.
+     * A user message with text content and optional images.
+     *
+     * @param content the text content
+     * @param imageDataUrls base64 data URLs (e.g. "data:image/png;base64,..."), may be empty
      */
-    record User(String content) implements ChatMessage {
+    record User(String content, List<String> imageDataUrls) implements ChatMessage {
+        public User(String content) {
+            this(content, List.of());
+        }
         @Override
         public String role() { return "user"; }
+        public boolean hasImages() { return imageDataUrls != null && !imageDataUrls.isEmpty(); }
     }
 
     /**
