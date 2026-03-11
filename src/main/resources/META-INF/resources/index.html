@@ -9,13 +9,31 @@
 </head>
 <body>
     <div id="login-screen" style="display:flex;align-items:center;justify-content:center;height:100vh;">
-        <form id="login-form" style="text-align:center;">
-            <h2 style="margin-bottom:16px;">Quarkus Local LLM Interface</h2>
-            <input id="login-user" type="text" placeholder="Username" autocomplete="username"
-                   style="padding:8px 12px;font-size:16px;border-radius:4px;border:1px solid #555;background:#2a2a2a;color:#eee;width:220px;">
-            <br><br>
-            <button type="submit" style="padding:8px 24px;font-size:16px;border-radius:4px;cursor:pointer;">Login</button>
-        </form>
+        <div style="display:flex;gap:60px;align-items:center;max-width:900px;width:90%;flex-wrap:wrap;justify-content:center;">
+            <form id="login-form" style="text-align:center;flex:0 0 auto;">
+                <h2 style="margin-bottom:16px;">Local LLM</h2>
+                <input id="login-user" type="text" placeholder="Username" autocomplete="username"
+                       style="padding:8px 12px;font-size:16px;border-radius:4px;border:1px solid #555;background:#2a2a2a;color:#eee;width:220px;">
+                <br><br>
+                <button type="submit" style="padding:8px 24px;font-size:16px;border-radius:4px;cursor:pointer;">Login</button>
+            </form>
+            <div id="login-features" style="flex:1 1 340px;text-align:left;color:#bbb;font-size:14px;line-height:1.7;">
+                <h3 style="color:#eee;margin-bottom:12px;">Features</h3>
+                <ul style="list-style:disc;padding-left:20px;margin:0;">
+                    <li><strong>Multi-tenant</strong> &mdash; per-user conversation history and SSE streams (BasicAuth)</li>
+                    <li><strong>Prompt queue</strong> &mdash; queue up prompts while the AI is responding</li>
+                    <li><strong>Multiple LLM server support</strong> &mdash; connect to vLLM, Ollama, and other OpenAI-compatible servers simultaneously</li>
+                    <li><strong>URL fetch</strong> &mdash; paste URLs in your prompt, click the Fetch button, and the page content is automatically prepended as reference context</li>
+                    <li><strong>Image OCR</strong> &mdash; paste or drag-and-drop images into the prompt area; they are sent to vision-capable models for OCR and analysis</li>
+                    <li><strong>Smart context management</strong> &mdash; pre-trims conversation history and fetched content to fit within the model's context window</li>
+                    <li>Real-time streaming responses (SSE) with Markdown rendering</li>
+                    <li>Dynamic model list with refresh button</li>
+                    <li>Save conversation history as Markdown file</li>
+                    <li>Copy button on both user prompts and assistant responses</li>
+                    <li>10 color themes</li>
+                </ul>
+            </div>
+        </div>
     </div>
     <div id="app" style="display:none;">
         <header>
