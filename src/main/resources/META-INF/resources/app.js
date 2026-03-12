@@ -31,11 +31,22 @@
         }
     });
 
-    if (currentUser) {
-        startApp(currentUser);
-    } else {
-        showLogin();
-    }
+    // Check single-user mode from server config
+    fetch('api/config').then(function (r) { return r.json(); }).then(function (cfg) {
+        if (cfg.singleUserMode) {
+            startApp('default');
+        } else if (currentUser) {
+            startApp(currentUser);
+        } else {
+            showLogin();
+        }
+    }).catch(function () {
+        if (currentUser) {
+            startApp(currentUser);
+        } else {
+            showLogin();
+        }
+    });
 
     var appInitialized = false;
     function initApp() {

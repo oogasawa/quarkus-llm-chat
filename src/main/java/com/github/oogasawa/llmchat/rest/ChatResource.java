@@ -85,6 +85,11 @@ public class ChatResource {
     @ConfigProperty(name = "llm-chat.title", defaultValue = "Local LLM")
     String appTitle;
 
+    @ConfigProperty(name = "llm-chat.single-user-mode", defaultValue = "false")
+    boolean singleUserMode;
+
+    private static final String DEFAULT_USER = "default";
+
     /** Per-user SSE connections: userId -> HttpServerResponse. */
     private final ConcurrentHashMap<String, HttpServerResponse> sseConnections = new ConcurrentHashMap<>();
 
@@ -107,8 +112,10 @@ public class ChatResource {
         // then fall back to BasicAuth header.
         var userParams = rc.queryParam("user");
         String queryUser = (userParams != null && !userParams.isEmpty()) ? userParams.get(0) : null;
-        final String userId = (queryUser != null && !queryUser.isBlank())
+        String resolved = (queryUser != null && !queryUser.isBlank())
                 ? queryUser : extractUserId(rc.request());
+        final String userId = (resolved != null) ? resolved
+                : (singleUserMode ? DEFAULT_USER : null);
         if (userId == null) {
             rc.response().setStatusCode(401).end("Unauthorized");
             return;
@@ -310,7 +317,7 @@ public class ChatResource {
     @Path("/config")
     @Produces(MediaType.APPLICATION_JSON)
     public AppConfig config() {
-        return new AppConfig(appTitle);
+        return new AppConfig(appTitle, singleUserMode);
     }
 
     /**
@@ -339,12 +346,17 @@ public class ChatResource {
 
     /**
      * Extracts user ID: query parameter takes precedence, then BasicAuth header.
+     * Falls back to DEFAULT_USER in single-user mode.
      */
-    static String resolveUserId(String queryUser, HttpHeaders headers) {
+    String resolveUserId(String queryUser, HttpHeaders headers) {
         if (queryUser != null && !queryUser.isBlank()) {
             return queryUser;
         }
-        return extractUserId(headers);
+        String fromAuth = extractUserId(headers);
+        if (fromAuth != null) {
+            return fromAuth;
+        }
+        return singleUserMode ? DEFAULT_USER : null;
     }
 
     /**
@@ -393,7 +405,7 @@ public class ChatResource {
 
     // --- DTOs ---
 
-    public record AppConfig(String title) {}
+    public record AppConfig(String title, boolean singleUserMode) {}
 
     public record ModelInfo(String name, String type, String server) {}
 
