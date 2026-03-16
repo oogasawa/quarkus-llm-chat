@@ -1032,3 +1032,30 @@ footer {
     text-overflow: ellipsis;
     max-width: 250px;
 }
+
+/* Notification bar for task-notification messages */
+#notification-bar {
+    display: none;
+    padding: 4px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+.notification-item {
+    padding: 4px 8px;
+    margin: 2px 0;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    transition: opacity 0.5s;
+}
+.notification-completed {
+    color: var(--accent-green);
+}
+.notification-failed {
+    color: var(--accent-red);
+}
+.notification-fade {
+    opacity: 0;
+}
