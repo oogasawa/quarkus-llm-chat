@@ -61,6 +61,31 @@
 
     function doInitApp() {
 
+        // --- Editable title ---
+        var appTitle = document.getElementById('app-title');
+        var defaultTitle = appTitle.textContent;
+        var savedTitle = localStorage.getItem('llm-chat-custom-title');
+        if (savedTitle) {
+            appTitle.textContent = savedTitle;
+            document.title = savedTitle;
+        }
+        appTitle.addEventListener('input', function () {
+            document.title = appTitle.textContent || defaultTitle;
+        });
+        appTitle.addEventListener('blur', function () {
+            var t = appTitle.textContent.trim();
+            if (t && t !== defaultTitle) {
+                localStorage.setItem('llm-chat-custom-title', t);
+            } else {
+                localStorage.removeItem('llm-chat-custom-title');
+                appTitle.textContent = defaultTitle;
+            }
+            document.title = appTitle.textContent;
+        });
+        appTitle.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); appTitle.blur(); }
+        });
+
     const chatArea = document.getElementById('chat-area');
     const promptInput = document.getElementById('prompt-input');
     const sendBtn = document.getElementById('send-btn');
