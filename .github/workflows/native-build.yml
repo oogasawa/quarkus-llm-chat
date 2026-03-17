@@ -54,8 +54,14 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
-          SRC="target/quarkus-llm-chat-1.0.1-runner${{ matrix.suffix }}"
           DEST="quarkus-llm-chat-${TAG}-${{ matrix.label }}${{ matrix.suffix }}"
+          # Try both old (-runner) and new Quarkus native output names
+          SRC=$(ls target/quarkus-llm-chat-*-runner${{ matrix.suffix }} 2>/dev/null || ls target/quarkus-llm-chat${{ matrix.suffix }} 2>/dev/null || echo "")
+          if [ -z "$SRC" ]; then
+            echo "::error::Native image not found in target/"
+            ls -la target/
+            exit 1
+          fi
           cp "${SRC}" "${DEST}"
           echo "ARTIFACT=${DEST}" >> $GITHUB_ENV
 
