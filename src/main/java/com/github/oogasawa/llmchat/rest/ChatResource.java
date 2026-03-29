@@ -106,7 +106,7 @@ public class ChatResource {
      * Registers a raw Vert.x route for SSE streaming.
      */
     void registerSseRoute(@Observes Router router) {
-        router.get("/api/chat/stream").handler(this::handleSseConnect);
+        router.get("/api/chat/stream").blockingHandler(this::handleSseConnect);
     }
 
     /**
