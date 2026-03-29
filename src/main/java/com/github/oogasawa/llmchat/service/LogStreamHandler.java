@@ -17,12 +17,13 @@
 
 package com.github.oogasawa.llmchat.service;
 
+import com.github.oogasawa.llmchat.actor.ChatActor;
 import com.github.oogasawa.llmchat.rest.ChatEvent;
+import com.scivicslab.pojoactor.core.ActorRef;
 import io.quarkus.runtime.Startup;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.logging.Handler;
@@ -30,59 +31,56 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 /**
- * Captures JUL log records into a ring buffer and optionally forwards them
- * as SSE events for real-time display in the web UI.
+ * JUL Handler that forwards log records to {@link ChatActor}.
+ * The ring buffer and SSE emitter state now live entirely in the actor;
+ * this class is a thin bridge that must remain a JUL Handler so it can be
+ * registered with the root logger.
+ * <p>
+ * The actor reference is wired in by {@link com.github.oogasawa.llmchat.actor.LlmConsoleActorSystem}
+ * after the actor is constructed, avoiding the circular-init problem that occurs
+ * when ChatActor logs during construction and publish() tries to access CDI.
+ * </p>
  */
 @ApplicationScoped
 @Startup
 public class LogStreamHandler extends Handler {
 
-    private static final int BUFFER_SIZE = 500;
     private static final String OWN_LOGGER = LogStreamHandler.class.getName();
 
-    private final ChatEvent[] buffer = new ChatEvent[BUFFER_SIZE];
-    private int head = 0;
-    private int count = 0;
-
-    private volatile Consumer<ChatEvent> sseEmitter;
+    // Set by LlmConsoleActorSystem after the actor is created; volatile for cross-thread visibility.
+    private volatile ActorRef<ChatActor> chatActorRef;
 
     @PostConstruct
     void init() {
         Logger.getLogger("").addHandler(this);
     }
 
+    /** Called by LlmConsoleActorSystem once the ChatActor is ready. */
+    public void wireActorRef(ActorRef<ChatActor> ref) {
+        this.chatActorRef = ref;
+    }
+
     public void setSseEmitter(Consumer<ChatEvent> emitter) {
-        this.sseEmitter = emitter;
+        var actor = chatActorRef;
+        if (actor != null) actor.tell(a -> a.setSseEmitter(emitter));
     }
 
     public void clearSseEmitter() {
-        this.sseEmitter = null;
+        var actor = chatActorRef;
+        if (actor != null) actor.tell(a -> a.clearSseEmitter());
     }
 
     @Override
-    public synchronized void publish(LogRecord record) {
+    public void publish(LogRecord record) {
         if (record == null) return;
-        String loggerName = record.getLoggerName();
-        if (OWN_LOGGER.equals(loggerName)) return;
-
+        if (OWN_LOGGER.equals(record.getLoggerName())) return;
+        var actor = chatActorRef;  // volatile read -- null before wireActorRef() is called
+        if (actor == null) return;
         String level = record.getLevel().getName();
+        String loggerName = record.getLoggerName();
         String message = formatMessage(record);
         long timestamp = record.getMillis();
-
-        ChatEvent event = ChatEvent.log(level, loggerName, message, timestamp);
-
-        buffer[head] = event;
-        head = (head + 1) % BUFFER_SIZE;
-        if (count < BUFFER_SIZE) count++;
-
-        Consumer<ChatEvent> emitter = sseEmitter;
-        if (emitter != null) {
-            try {
-                emitter.accept(event);
-            } catch (Exception ignored) {
-                // SSE write failure — don't recurse
-            }
-        }
+        actor.tell(a -> a.publishLog(level, loggerName, message, timestamp));
     }
 
     private String formatMessage(LogRecord record) {
@@ -99,13 +97,10 @@ public class LogStreamHandler extends Handler {
         return msg;
     }
 
-    public synchronized List<ChatEvent> getRecentLogs() {
-        List<ChatEvent> result = new ArrayList<>(count);
-        int start = (head - count + BUFFER_SIZE) % BUFFER_SIZE;
-        for (int i = 0; i < count; i++) {
-            result.add(buffer[(start + i) % BUFFER_SIZE]);
-        }
-        return result;
+    public List<ChatEvent> getRecentLogs() {
+        var actor = chatActorRef;
+        if (actor == null) return List.of();
+        return actor.ask(a -> a.getRecentLogs()).join();
     }
 
     @Override

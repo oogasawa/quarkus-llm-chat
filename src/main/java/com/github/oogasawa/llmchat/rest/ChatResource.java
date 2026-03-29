@@ -18,7 +18,8 @@
 package com.github.oogasawa.llmchat.rest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.oogasawa.llmchat.service.ChatService;
+import com.github.oogasawa.llmchat.actor.ChatActor;
+import com.github.oogasawa.llmchat.actor.LlmConsoleActorSystem;
 import com.github.oogasawa.llmchat.service.LogStreamHandler;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServerRequest;
@@ -33,6 +34,7 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
@@ -42,6 +44,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -71,7 +74,7 @@ public class ChatResource {
     private static final Logger logger = Logger.getLogger(ChatResource.class.getName());
 
     @Inject
-    ChatService chatService;
+    LlmConsoleActorSystem actorSystem;
 
     @Inject
     LogStreamHandler logStreamHandler;
@@ -87,6 +90,9 @@ public class ChatResource {
 
     @ConfigProperty(name = "llm-chat.single-user-mode", defaultValue = "false")
     boolean singleUserMode;
+
+    @ConfigProperty(name = "llm-console.keybind", defaultValue = "default")
+    String keybind;
 
     private static final String DEFAULT_USER = "default";
 
@@ -143,7 +149,8 @@ public class ChatResource {
         response.write("retry: 10000\n\n");
 
         // Send initial status
-        writeSse(response, ChatEvent.status(null, null, chatService.isBusy(userId)));
+        boolean userBusy = actorSystem.getChatActor().ask(a -> a.isBusy(userId)).join();
+        writeSse(response, ChatEvent.status(null, null, userBusy));
 
         // Heartbeat every 15 seconds
         long timerId = vertx.setPeriodic(15_000, id -> {
@@ -233,15 +240,10 @@ public class ChatResource {
 
         String model = request.model;
 
-        Thread.startVirtualThread(() -> {
-            try {
-                chatService.sendPrompt(userId, request.text, model, request.noThink,
-                        request.images, event -> emitSse(userId, event));
-            } catch (Exception e) {
-                logger.log(Level.WARNING, "Chat prompt failed for user " + userId, e);
-                emitSse(userId, ChatEvent.error("Internal error: " + e.getMessage()));
-            }
-        });
+        var actor = actorSystem.getChatActor();
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        actor.tell(a -> a.startPrompt(userId, request.text, model, request.noThink,
+                request.images, event -> emitSse(userId, event), actor, done));
 
         return ChatEvent.info("Processing");
     }
@@ -257,7 +259,7 @@ public class ChatResource {
         if (userId == null) {
             return ChatEvent.error("Unauthorized");
         }
-        chatService.cancel(userId);
+        actorSystem.getChatActor().tell(a -> a.cancel(userId));
         return ChatEvent.info("Cancelled");
     }
 
@@ -272,7 +274,7 @@ public class ChatResource {
         if (userId == null) {
             return ChatEvent.error("Unauthorized");
         }
-        chatService.clearHistory(userId);
+        actorSystem.getChatActor().tell(a -> a.clearHistory(userId));
         return ChatEvent.info("History cleared");
     }
 
@@ -284,8 +286,8 @@ public class ChatResource {
     @Produces(MediaType.APPLICATION_JSON)
     public ChatEvent status(@QueryParam("user") String queryUser, @Context HttpHeaders headers) {
         String userId = resolveUserId(queryUser, headers);
-        boolean busy = userId != null && chatService.isBusy(userId);
-        return ChatEvent.status(null, null, busy);
+        boolean userBusy = userId != null && actorSystem.getChatActor().ask(a -> a.isBusy(userId)).join();
+        return ChatEvent.status(null, null, userBusy);
     }
 
     /**
@@ -295,7 +297,7 @@ public class ChatResource {
     @Path("/models")
     @Produces(MediaType.APPLICATION_JSON)
     public List<ModelInfo> models() {
-        return chatService.getAvailableModels().stream()
+        return actorSystem.getChatActor().ask(a -> a.getAvailableModels()).join().stream()
                 .map(e -> new ModelInfo(e.name(), e.type(), e.server()))
                 .toList();
     }
@@ -317,7 +319,7 @@ public class ChatResource {
     @Path("/config")
     @Produces(MediaType.APPLICATION_JSON)
     public AppConfig config() {
-        return new AppConfig(appTitle, singleUserMode);
+        return new AppConfig(appTitle, singleUserMode, keybind);
     }
 
     /**
@@ -340,6 +342,34 @@ public class ChatResource {
             return new FetchResult(false, "", content);
         }
         return new FetchResult(true, content, null);
+    }
+
+    /**
+     * Returns recent conversation history as JSON.
+     * Used by external tools (e.g., fcitx5-predict-ja) to harvest text for dictionary enrichment.
+     */
+    @GET
+    @Path("/history")
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<HistoryMessage> history(
+            @QueryParam("user") String queryUser,
+            @QueryParam("limit") @DefaultValue("20") int limit,
+            @Context HttpHeaders headers) {
+        String userId = resolveUserId(queryUser, headers);
+        if (userId == null) {
+            return List.of();
+        }
+        return actorSystem.getChatActor().ask(a -> a.getRecentHistory(userId, limit)).join().stream()
+                .map(msg -> {
+                    if (msg instanceof com.github.oogasawa.llmchat.vllm.ChatMessage.User u) {
+                        return new HistoryMessage("user", u.content());
+                    } else if (msg instanceof com.github.oogasawa.llmchat.vllm.ChatMessage.Assistant a) {
+                        return new HistoryMessage("assistant", a.content());
+                    }
+                    return null;
+                })
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 
     // --- User extraction ---
@@ -405,7 +435,7 @@ public class ChatResource {
 
     // --- DTOs ---
 
-    public record AppConfig(String title, boolean singleUserMode) {}
+    public record AppConfig(String title, boolean singleUserMode, String keybind) {}
 
     public record ModelInfo(String name, String type, String server) {}
 
@@ -414,6 +444,8 @@ public class ChatResource {
     }
 
     public record FetchResult(boolean ok, String content, String error) {}
+
+    public record HistoryMessage(String role, String content) {}
 
     public static class PromptRequest {
         public String text;

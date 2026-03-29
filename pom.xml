@@ -40,6 +40,13 @@
       <artifactId>quarkus-rest-jackson</artifactId>
     </dependency>
 
+    <!-- POJO-actor (lightweight actor model) -->
+    <dependency>
+      <groupId>com.scivicslab</groupId>
+      <artifactId>pojo-actor</artifactId>
+      <version>3.0.0</version>
+    </dependency>
+
     <!-- HTML parsing for URL fetch -->
     <dependency>
       <groupId>org.jsoup</groupId>

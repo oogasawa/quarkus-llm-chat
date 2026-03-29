@@ -49,6 +49,8 @@
     });
 
     var appInitialized = false;
+    var activeKeybind = 'default';
+
     function initApp() {
         if (appInitialized) return;
         appInitialized = true;
@@ -159,6 +161,22 @@
         breaks: true,
         gfm: true
     });
+
+    // Fix unclosed markdown fences/inline-code so marked.parse() doesn't break mid-stream
+    function closeOpenMarkdown(text) {
+        // Count triple-backtick fences
+        var fenceCount = (text.match(/```/g) || []).length;
+        if (fenceCount % 2 !== 0) {
+            text += '\n```';
+        }
+        // Count single backticks (outside of fenced blocks)
+        var withoutFences = text.replace(/```/g, '');
+        var tickCount = (withoutFences.match(/`/g) || []).length;
+        if (tickCount % 2 !== 0) {
+            text += '`';
+        }
+        return text;
+    }
 
     // --- Timestamp helper ---
 
@@ -410,7 +428,7 @@
         var displayText = currentAssistantText
             .replace(/<think>[\s\S]*?<\/think>/g, '')
             .replace(/<think>[\s\S]*$/, '');  // partial unclosed <think> block
-        currentAssistantMsg.innerHTML = marked.parse(displayText);
+        currentAssistantMsg.innerHTML = marked.parse(closeOpenMarkdown(displayText));
         scrollToBottom();
     }
 
@@ -920,7 +938,8 @@
                     + (canDown ? '' : ' disabled') + ' title="Move down">&darr;</button>';
             }
 
-            html += '<button class="queue-remove" data-queue-remove="' + i + '" title="Remove">&times;</button>'
+            html += '<button class="queue-edit" data-queue-edit="' + i + '" title="Edit (copy to input)">&#x1F4DD;</button>'
+                + '<button class="queue-remove" data-queue-remove="' + i + '" title="Remove">&times;</button>'
                 + '</div>';
         }
 
@@ -930,6 +949,17 @@
 
     // Delegate click events on queue area
     queueArea.addEventListener('click', function (e) {
+        var editBtn = e.target.closest('[data-queue-edit]');
+        if (editBtn) {
+            var idx = parseInt(editBtn.getAttribute('data-queue-edit'), 10);
+            if (idx >= 0 && idx < queue.length) {
+                promptInput.value = queue[idx].text;
+                autoResize();
+                promptInput.focus();
+            }
+            return;
+        }
+
         var removeBtn = e.target.closest('[data-queue-remove]');
         if (removeBtn) {
             var idx = parseInt(removeBtn.getAttribute('data-queue-remove'), 10);
@@ -1303,9 +1333,209 @@
         predictFetching = false;
     }
 
+    // --- Vi mode state ---
+    var viMode = 'insert'; // 'normal' or 'insert'
+
+    function updateViCursor() {
+        if (activeKeybind === 'vi' && viMode === 'normal') {
+            promptInput.classList.add('vi-normal');
+        } else {
+            promptInput.classList.remove('vi-normal');
+        }
+    }
+
+    // --- Emacs keybind handler ---
+    // Returns true if the event was handled.
+    function handleEmacsKeybind(e) {
+        if (activeKeybind !== 'emacs') return false;
+        if (!e.ctrlKey) return false;
+
+        var el = promptInput;
+        var pos = el.selectionStart;
+        var val = el.value;
+
+        switch (e.key) {
+            case 'a': // beginning of line
+                e.preventDefault();
+                var lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+                el.setSelectionRange(lineStart, lineStart);
+                return true;
+            case 'e': // end of line
+                e.preventDefault();
+                var lineEnd = val.indexOf('\n', pos);
+                if (lineEnd < 0) lineEnd = val.length;
+                el.setSelectionRange(lineEnd, lineEnd);
+                return true;
+            case 'f': // forward char
+                e.preventDefault();
+                if (pos < val.length) el.setSelectionRange(pos + 1, pos + 1);
+                return true;
+            case 'b': // backward char
+                e.preventDefault();
+                if (pos > 0) el.setSelectionRange(pos - 1, pos - 1);
+                return true;
+            case 'n': // next line
+                e.preventDefault();
+                var nextNl = val.indexOf('\n', pos);
+                if (nextNl >= 0) el.setSelectionRange(nextNl + 1, nextNl + 1);
+                return true;
+            case 'p': // previous line
+                e.preventDefault();
+                var prevNl = val.lastIndexOf('\n', pos - 1);
+                if (prevNl >= 0) {
+                    var prevPrevNl = val.lastIndexOf('\n', prevNl - 1);
+                    el.setSelectionRange(prevPrevNl + 1, prevPrevNl + 1);
+                }
+                return true;
+            case 'd': // delete forward
+                e.preventDefault();
+                if (pos < val.length) {
+                    el.value = val.substring(0, pos) + val.substring(pos + 1);
+                    el.setSelectionRange(pos, pos);
+                    autoResize();
+                }
+                return true;
+            case 'h': // delete backward (backspace)
+                e.preventDefault();
+                if (pos > 0) {
+                    el.value = val.substring(0, pos - 1) + val.substring(pos);
+                    el.setSelectionRange(pos - 1, pos - 1);
+                    autoResize();
+                }
+                return true;
+            case 'k': // kill to end of line
+                e.preventDefault();
+                var eol = val.indexOf('\n', pos);
+                if (eol < 0) eol = val.length;
+                el.value = val.substring(0, pos) + val.substring(eol);
+                el.setSelectionRange(pos, pos);
+                autoResize();
+                return true;
+        }
+        return false;
+    }
+
+    // --- Vi keybind handler ---
+    // Returns true if the event was handled.
+    function handleViKeybind(e) {
+        if (activeKeybind !== 'vi') return false;
+
+        var el = promptInput;
+        var pos = el.selectionStart;
+        var val = el.value;
+
+        if (viMode === 'normal') {
+            e.preventDefault();
+            switch (e.key) {
+                case 'i': // insert mode
+                    viMode = 'insert';
+                    updateViCursor();
+                    return true;
+                case 'a': // append
+                    viMode = 'insert';
+                    if (pos < val.length) el.setSelectionRange(pos + 1, pos + 1);
+                    updateViCursor();
+                    return true;
+                case 'A': // append at end of line
+                    viMode = 'insert';
+                    var eolA = val.indexOf('\n', pos);
+                    if (eolA < 0) eolA = val.length;
+                    el.setSelectionRange(eolA, eolA);
+                    updateViCursor();
+                    return true;
+                case 'I': // insert at beginning of line
+                    viMode = 'insert';
+                    var bolI = val.lastIndexOf('\n', pos - 1) + 1;
+                    el.setSelectionRange(bolI, bolI);
+                    updateViCursor();
+                    return true;
+                case 'h': // left
+                    if (pos > 0) el.setSelectionRange(pos - 1, pos - 1);
+                    return true;
+                case 'l': // right
+                    if (pos < val.length) el.setSelectionRange(pos + 1, pos + 1);
+                    return true;
+                case 'j': // down
+                    var nextNlJ = val.indexOf('\n', pos);
+                    if (nextNlJ >= 0) el.setSelectionRange(nextNlJ + 1, nextNlJ + 1);
+                    return true;
+                case 'k': // up
+                    var prevNlK = val.lastIndexOf('\n', pos - 1);
+                    if (prevNlK >= 0) {
+                        var ppK = val.lastIndexOf('\n', prevNlK - 1);
+                        el.setSelectionRange(ppK + 1, ppK + 1);
+                    }
+                    return true;
+                case '0': // beginning of line
+                    var bol0 = val.lastIndexOf('\n', pos - 1) + 1;
+                    el.setSelectionRange(bol0, bol0);
+                    return true;
+                case '$': // end of line
+                    var eol$ = val.indexOf('\n', pos);
+                    if (eol$ < 0) eol$ = val.length;
+                    el.setSelectionRange(eol$, eol$);
+                    return true;
+                case 'w': // next word
+                    var wMatch = val.substring(pos).match(/\S+\s*/);
+                    if (wMatch) {
+                        var newPos = pos + wMatch[0].length;
+                        el.setSelectionRange(newPos, newPos);
+                    }
+                    return true;
+                case 'b': // previous word
+                    var before = val.substring(0, pos);
+                    var bMatch = before.match(/\S+\s*$/);
+                    if (bMatch) {
+                        var bPos = pos - bMatch[0].length;
+                        el.setSelectionRange(bPos, bPos);
+                    }
+                    return true;
+                case 'x': // delete char
+                    if (pos < val.length) {
+                        el.value = val.substring(0, pos) + val.substring(pos + 1);
+                        el.setSelectionRange(pos, pos);
+                        autoResize();
+                    }
+                    return true;
+                case 'd':
+                    // dd = delete line (simplified: just clear)
+                    // For simplicity, delete to end of line
+                    var eolD = val.indexOf('\n', pos);
+                    if (eolD < 0) eolD = val.length;
+                    el.value = val.substring(0, pos) + val.substring(eolD);
+                    el.setSelectionRange(pos, pos);
+                    autoResize();
+                    return true;
+                case 'G': // go to end
+                    el.setSelectionRange(val.length, val.length);
+                    return true;
+                case 'g': // gg = go to start (simplified)
+                    el.setSelectionRange(0, 0);
+                    return true;
+            }
+            return true; // consume all keys in normal mode
+        }
+
+        // Insert mode: Escape returns to normal mode
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            viMode = 'normal';
+            updateViCursor();
+            return true;
+        }
+
+        return false;
+    }
+
     // --- Input handling (IME-safe) ---
 
     promptInput.addEventListener('keydown', function (e) {
+        // Keybind handlers take priority (except during IME composition)
+        if (!e.isComposing) {
+            if (handleEmacsKeybind(e)) return;
+            if (handleViKeybind(e)) return;
+        }
+
         // Prediction popup navigation
         if (predictPopup.style.display !== 'none' && predictCandidates.length > 0) {
             if (e.key === 'Escape') {
@@ -1487,6 +1717,9 @@
                     document.title = cfg.title;
                     var h1 = document.querySelector('header h1');
                     if (h1) h1.textContent = cfg.title;
+                }
+                if (cfg.keybind) {
+                    activeKeybind = cfg.keybind;
                 }
             })
             .catch(function () {

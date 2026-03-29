@@ -15,50 +15,51 @@
  * under the License.
  */
 
-package com.github.oogasawa.llmchat.service;
+package com.github.oogasawa.llmchat.actor;
 
 import com.github.oogasawa.llmchat.rest.ChatEvent;
 import com.github.oogasawa.llmchat.rest.ChatResource;
 import com.github.oogasawa.llmchat.vllm.ChatMessage;
 import com.github.oogasawa.llmchat.vllm.VllmClient;
+import com.scivicslab.pojoactor.core.ActorRef;
+import com.scivicslab.pojoactor.core.ActorSystem;
 import org.junit.jupiter.api.Test;
 
-import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class ChatServiceTest {
+class ChatActorTest {
 
     // --- isBusy ---
 
     @Test
     void isBusy_initiallyFalse() {
-        ChatService service = createService("");
-        assertFalse(service.isBusy("user1"));
+        ChatActor actor = createActor("");
+        assertFalse(actor.isBusy("user1"));
     }
 
     // --- getHistory ---
 
     @Test
     void getHistory_createsNewListPerUser() {
-        ChatService service = createService("");
-        var h1 = service.getHistory("user1");
-        var h2 = service.getHistory("user2");
+        ChatActor actor = createActor("");
+        var h1 = actor.getHistory("user1");
+        var h2 = actor.getHistory("user2");
         assertNotSame(h1, h2);
     }
 
     @Test
     void getHistory_returnsSameListForSameUser() {
-        ChatService service = createService("");
-        var h1 = service.getHistory("user1");
-        var h2 = service.getHistory("user1");
+        ChatActor actor = createActor("");
+        var h1 = actor.getHistory("user1");
+        var h2 = actor.getHistory("user1");
         assertSame(h1, h2);
     }
 
@@ -66,27 +67,27 @@ class ChatServiceTest {
 
     @Test
     void clearHistory_removesUserHistory() {
-        ChatService service = createService("");
-        service.getHistory("user1").add(new ChatMessage.User("hello"));
-        assertEquals(1, service.getHistory("user1").size());
+        ChatActor actor = createActor("");
+        actor.getHistory("user1").add(new ChatMessage.User("hello"));
+        assertEquals(1, actor.getHistory("user1").size());
 
-        service.clearHistory("user1");
+        actor.clearHistory("user1");
         // After clear, getHistory creates a new empty list
-        assertEquals(0, service.getHistory("user1").size());
+        assertEquals(0, actor.getHistory("user1").size());
     }
 
     // --- trimHistory ---
 
     @Test
     void trimHistory_removesOldestAndOrphanedAssistant() {
-        ChatService service = new ChatService("", 4);
+        ChatActor actor = new ChatActor("", 4);
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("msg1"));
         history.add(new ChatMessage.Assistant("resp1"));
         history.add(new ChatMessage.User("msg2"));
         history.add(new ChatMessage.Assistant("resp2"));
         history.add(new ChatMessage.User("msg3"));
-        service.trimHistory(history);
+        actor.trimHistory(history);
 
         // maxHistory=4: "msg1" removed (over limit), then "resp1" removed (orphaned)
         assertEquals(3, history.size());
@@ -96,7 +97,7 @@ class ChatServiceTest {
 
     @Test
     void trimHistory_alwaysStartsWithUser() {
-        ChatService service = new ChatService("", 4);
+        ChatActor actor = new ChatActor("", 4);
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("q1"));
         history.add(new ChatMessage.Assistant("a1"));
@@ -104,7 +105,7 @@ class ChatServiceTest {
         history.add(new ChatMessage.Assistant("a2"));
         history.add(new ChatMessage.User("q3"));
         history.add(new ChatMessage.Assistant("a3"));
-        service.trimHistory(history);
+        actor.trimHistory(history);
 
         assertInstanceOf(ChatMessage.User.class, history.get(0));
     }
@@ -113,85 +114,35 @@ class ChatServiceTest {
 
     @Test
     void cancel_whenNotBusy_doesNotThrow() {
-        ChatService service = createService("");
-        assertDoesNotThrow(() -> service.cancel("user1"));
+        ChatActor actor = createActor("");
+        assertDoesNotThrow(() -> actor.cancel("user1"));
     }
 
     @Test
-    void cancel_interruptsActiveThread() throws Exception {
+    void startPrompt_withActorSystem_setsAndClearsBusy() throws Exception {
         Logger vllmLogger = Logger.getLogger(VllmClient.class.getName());
         Level originalLevel = vllmLogger.getLevel();
         vllmLogger.setLevel(Level.OFF);
         try {
-            try (ServerSocket ss = new ServerSocket(0)) {
-                int port = ss.getLocalPort();
-                ChatService service = new ChatService(
-                        "http://localhost:" + port, 10);
-
-                var events = new CopyOnWriteArrayList<ChatEvent>();
-                var started = new CountDownLatch(1);
-
-                Thread worker = Thread.startVirtualThread(() -> {
-                    started.countDown();
-                    service.sendPrompt("user1", "hello", "fake-model", false, null, events::add);
-                });
-
-                assertTrue(started.await(5, TimeUnit.SECONDS));
-                Thread.sleep(200);
-
-                service.cancel("user1");
-                worker.join(5000);
-
-                assertFalse(worker.isAlive());
-            }
-        } finally {
-            vllmLogger.setLevel(originalLevel);
-        }
-    }
-
-    @Test
-    void sendPrompt_setsAndClearsBusyFlag() throws Exception {
-        Logger vllmLogger = Logger.getLogger(VllmClient.class.getName());
-        Level originalLevel = vllmLogger.getLevel();
-        vllmLogger.setLevel(Level.OFF);
-        try {
-            ChatService service = new ChatService("http://localhost:1", 10);
+            ActorSystem system = new ActorSystem("test");
+            ChatActor chatActor = new ChatActor("http://localhost:1", 10);
+            ActorRef<ChatActor> ref = system.actorOf("chat", chatActor);
 
             var events = new CopyOnWriteArrayList<ChatEvent>();
-            var done = new CountDownLatch(1);
+            CompletableFuture<Void> done = new CompletableFuture<>();
 
-            Thread.startVirtualThread(() -> {
-                service.sendPrompt("user1", "hello", "some-model", false, null, events::add);
-                done.countDown();
-            });
+            ref.tell(a -> a.startPrompt("user1", "hello", "some-model", false, null,
+                    events::add, ref, done));
 
-            assertTrue(done.await(10, TimeUnit.SECONDS));
-            assertFalse(service.isBusy("user1"));
+            done.get(10, TimeUnit.SECONDS);
+            // After completion, user should not be busy
+            boolean busy = ref.ask(a -> a.isBusy("user1")).get(5, TimeUnit.SECONDS);
+            assertFalse(busy);
+
+            system.terminate();
         } finally {
             vllmLogger.setLevel(originalLevel);
         }
-    }
-
-    // --- extractHost ---
-
-    @Test
-    void extractHost_withPort() {
-        assertEquals("192.168.5.15:8000", LocalLlmModelSet.extractHost("http://192.168.5.15:8000"));
-    }
-
-    @Test
-    void extractHost_withoutPort() {
-        assertEquals("example.com", LocalLlmModelSet.extractHost("http://example.com"));
-    }
-
-    @Test
-    void extractHost_httpsWithPort() {
-        assertEquals("localhost:11434", LocalLlmModelSet.extractHost("https://localhost:11434"));
-    }
-
-    @Test
-    void extractHost_invalidUrl_returnsOriginal() {
-        assertEquals("not-a-url", LocalLlmModelSet.extractHost("not-a-url"));
     }
 
     // --- BasicAuth parsing ---
@@ -234,18 +185,18 @@ class ChatServiceTest {
     @Test
     void calculateMaxTokens_smallContext() {
         // llm-jp: 4096 / 2 = 2048
-        assertEquals(2048, ChatService.calculateMaxTokens(4096));
+        assertEquals(2048, ChatActor.calculateMaxTokens(4096));
     }
 
     @Test
     void calculateMaxTokens_largeContext() {
         // Qwen3.5: 262144 / 2 = 131072, capped at 8192
-        assertEquals(8192, ChatService.calculateMaxTokens(262144));
+        assertEquals(8192, ChatActor.calculateMaxTokens(262144));
     }
 
     @Test
     void calculateMaxTokens_unknown() {
-        assertEquals(1024, ChatService.calculateMaxTokens(-1));
+        assertEquals(1024, ChatActor.calculateMaxTokens(-1));
     }
 
     // --- calculateSendLimit ---
@@ -253,24 +204,24 @@ class ChatServiceTest {
     @Test
     void calculateSendLimit_smallContext() {
         // llm-jp: (4096 - 2048) / 200 = 10
-        assertEquals(10, ChatService.calculateSendLimit(4096, 2048));
+        assertEquals(10, ChatActor.calculateSendLimit(4096, 2048));
     }
 
     @Test
     void calculateSendLimit_largeContext() {
         // Qwen3.5: (262144 - 8192) / 200 = 1269, capped at 50
-        assertEquals(50, ChatService.calculateSendLimit(262144, 8192));
+        assertEquals(50, ChatActor.calculateSendLimit(262144, 8192));
     }
 
     @Test
     void calculateSendLimit_unknown() {
-        assertEquals(6, ChatService.calculateSendLimit(-1, 1024));
+        assertEquals(6, ChatActor.calculateSendLimit(-1, 1024));
     }
 
     @Test
     void calculateSendLimit_verySmallContext() {
         // (1024 - 512) / 200 = 2, minimum is 2
-        assertEquals(2, ChatService.calculateSendLimit(1024, 512));
+        assertEquals(2, ChatActor.calculateSendLimit(1024, 512));
     }
 
     // --- recentWindow ---
@@ -282,7 +233,7 @@ class ChatServiceTest {
             history.add(new ChatMessage.User("q" + i));
             history.add(new ChatMessage.Assistant("a" + i));
         }
-        List<ChatMessage> window = ChatService.recentWindow(history, 6);
+        List<ChatMessage> window = ChatActor.recentWindow(history, 6);
         assertEquals(6, window.size());
         // Should start with a user message
         assertInstanceOf(ChatMessage.User.class, window.get(0));
@@ -297,7 +248,7 @@ class ChatServiceTest {
         history.add(new ChatMessage.Assistant("a2"));
         history.add(new ChatMessage.User("q3"));
         // limit=4 => start at index 1 (Assistant), should skip to index 2 (User)
-        List<ChatMessage> window = ChatService.recentWindow(history, 4);
+        List<ChatMessage> window = ChatActor.recentWindow(history, 4);
         assertInstanceOf(ChatMessage.User.class, window.get(0));
         assertEquals("q2", ((ChatMessage.User) window.get(0)).content());
     }
@@ -307,7 +258,7 @@ class ChatServiceTest {
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("q1"));
         history.add(new ChatMessage.Assistant("a1"));
-        List<ChatMessage> window = ChatService.recentWindow(history, 10);
+        List<ChatMessage> window = ChatActor.recentWindow(history, 10);
         assertEquals(2, window.size());
     }
 
@@ -315,7 +266,7 @@ class ChatServiceTest {
     void recentWindow_isMutableCopy() {
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("q1"));
-        List<ChatMessage> window = ChatService.recentWindow(history, 10);
+        List<ChatMessage> window = ChatActor.recentWindow(history, 10);
         window.add(new ChatMessage.User("q2"));
         // Original should not be modified
         assertEquals(1, history.size());
@@ -325,17 +276,17 @@ class ChatServiceTest {
 
     @Test
     void preTrimToFit_withinBudget_noChange() {
-        ChatService service = createService("");
+        ChatActor actor = createActor("");
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("hello"));       // 5 chars
         history.add(new ChatMessage.Assistant("world"));   // 5 chars
-        service.preTrimToFit(history, 100);
+        actor.preTrimToFit(history, 100);
         assertEquals(2, history.size());
     }
 
     @Test
     void preTrimToFit_removesOldMessagesFirst() {
-        ChatService service = createService("");
+        ChatActor actor = createActor("");
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("old1"));         // 4
         history.add(new ChatMessage.Assistant("old2"));    // 4
@@ -343,7 +294,7 @@ class ChatServiceTest {
         history.add(new ChatMessage.Assistant("old4"));    // 4
         history.add(new ChatMessage.User("current"));      // 7
         // Total: 23 chars, budget: 10
-        service.preTrimToFit(history, 10);
+        actor.preTrimToFit(history, 10);
         // Should keep only last message
         assertEquals(1, history.size());
         assertEquals("current", ((ChatMessage.User) history.get(0)).content());
@@ -351,13 +302,13 @@ class ChatServiceTest {
 
     @Test
     void preTrimToFit_truncatesLastUserFromEnd() {
-        ChatService service = createService("");
+        ChatActor actor = createActor("");
         List<ChatMessage> history = new ArrayList<>();
         // 200 chars of content
         String longContent = "prompt\n\n---\nContent of http://example.com:\n" + "x".repeat(160);
         history.add(new ChatMessage.User(longContent));
         // Budget: 50 chars
-        service.preTrimToFit(history, 50);
+        actor.preTrimToFit(history, 50);
         assertEquals(1, history.size());
         String result = ((ChatMessage.User) history.get(0)).content();
         // Should be truncated, starts with "prompt" (beginning preserved)
@@ -368,14 +319,14 @@ class ChatServiceTest {
 
     @Test
     void preTrimToFit_removesOldThenTruncates() {
-        ChatService service = createService("");
+        ChatActor actor = createActor("");
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("old question"));
         history.add(new ChatMessage.Assistant("old answer"));
         String longContent = "my prompt\n\n---\nContent:\n" + "y".repeat(300);
         history.add(new ChatMessage.User(longContent));
         // Budget: 80 chars - should remove old messages, then truncate last
-        service.preTrimToFit(history, 80);
+        actor.preTrimToFit(history, 80);
         assertEquals(1, history.size());
         String result = ((ChatMessage.User) history.get(0)).content();
         assertTrue(result.startsWith("my prompt"));
@@ -386,7 +337,7 @@ class ChatServiceTest {
 
     @Test
     void estimateTotalChars_empty() {
-        assertEquals(0, ChatService.estimateTotalChars(new ArrayList<>()));
+        assertEquals(0, ChatActor.estimateTotalChars(new ArrayList<>()));
     }
 
     @Test
@@ -394,12 +345,24 @@ class ChatServiceTest {
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage.User("hello"));        // 5
         history.add(new ChatMessage.Assistant("world!"));   // 6
-        assertEquals(11, ChatService.estimateTotalChars(history));
+        assertEquals(11, ChatActor.estimateTotalChars(history));
+    }
+
+    // --- Log ring buffer ---
+
+    @Test
+    void publishLog_andGetRecentLogs() {
+        ChatActor actor = createActor("");
+        actor.publishLog("INFO", "test.Logger", "test message", System.currentTimeMillis());
+        List<ChatEvent> logs = actor.getRecentLogs();
+        assertEquals(1, logs.size());
+        assertEquals("log", logs.get(0).type());
+        assertEquals("test message", logs.get(0).content());
     }
 
     // --- helpers ---
 
-    private static ChatService createService(String servers) {
-        return new ChatService(servers, 50);
+    private static ChatActor createActor(String servers) {
+        return new ChatActor(servers, 50);
     }
 }
